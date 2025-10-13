@@ -1,0 +1,61 @@
+/project/atlas/Users/mveldijk/MLHEPsim/venv311/lib/python3.11/site-packages/lightning/fabric/__init__.py:36: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  __import__("pkg_resources").declare_namespace(__name__)
+Error executing job with overrides: []
+Traceback (most recent call last):
+  File "/project/atlas/Users/mveldijk/MLHEPsim/ml/custom/HIGGS/main_flows.py", line 210, in main
+    trainer.fit(flow, data_module)
+  File "/project/atlas/Users/mveldijk/MLHEPsim/venv311/lib/python3.11/site-packages/lightning/pytorch/trainer/trainer.py", line 529, in fit
+    call._call_and_handle_interrupt(
+  File "/project/atlas/Users/mveldijk/MLHEPsim/venv311/lib/python3.11/site-packages/lightning/pytorch/trainer/call.py", line 42, in _call_and_handle_interrupt
+    return trainer_fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/project/atlas/Users/mveldijk/MLHEPsim/venv311/lib/python3.11/site-packages/lightning/pytorch/trainer/trainer.py", line 568, in _fit_impl
+    self._run(model, ckpt_path=ckpt_path)
+  File "/project/atlas/Users/mveldijk/MLHEPsim/venv311/lib/python3.11/site-packages/lightning/pytorch/trainer/trainer.py", line 934, in _run
+    call._call_setup_hook(self)  # allow user to setup lightning_module in accelerator environment
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/project/atlas/Users/mveldijk/MLHEPsim/venv311/lib/python3.11/site-packages/lightning/pytorch/trainer/call.py", line 83, in _call_setup_hook
+    _call_lightning_datamodule_hook(trainer, "setup", stage=fn)
+  File "/project/atlas/Users/mveldijk/MLHEPsim/venv311/lib/python3.11/site-packages/lightning/pytorch/trainer/call.py", line 164, in _call_lightning_datamodule_hook
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/project/atlas/Users/mveldijk/MLHEPsim/ml/custom/HIGGS/higgs_dataset.py", line 16, in setup
+    data, self.selection, self.scalers = self.processor()
+                                         ^^^^^^^^^^^^^^^^
+  File "/project/atlas/Users/mveldijk/MLHEPsim/ml/common/data_utils/processors.py", line 537, in __call__
+    x = processor(x)
+        ^^^^^^^^^^^^
+  File "/project/atlas/Users/mveldijk/MLHEPsim/ml/custom/HIGGS/process_higgs_dataset.py", line 74, in __call__
+    dataset = self.get_dataset()
+              ^^^^^^^^^^^^^^^^^^
+  File "/project/atlas/Users/mveldijk/MLHEPsim/ml/custom/HIGGS/process_higgs_dataset.py", line 118, in get_dataset
+    dataset = self._read_gzip_df()
+              ^^^^^^^^^^^^^^^^^^^^
+  File "/project/atlas/Users/mveldijk/MLHEPsim/ml/custom/HIGGS/process_higgs_dataset.py", line 142, in _read_gzip_df
+    dataset = pd.read_csv(self.file_name, engine="c", compression="gzip", dtype=np.float32)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/project/atlas/Users/mveldijk/MLHEPsim/venv311/lib/python3.11/site-packages/pandas/io/parsers/readers.py", line 912, in read_csv
+    return _read(filepath_or_buffer, kwds)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/project/atlas/Users/mveldijk/MLHEPsim/venv311/lib/python3.11/site-packages/pandas/io/parsers/readers.py", line 583, in _read
+    return parser.read(nrows)
+           ^^^^^^^^^^^^^^^^^^
+  File "/project/atlas/Users/mveldijk/MLHEPsim/venv311/lib/python3.11/site-packages/pandas/io/parsers/readers.py", line 1704, in read
+    ) = self._engine.read(  # type: ignore[attr-defined]
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/project/atlas/Users/mveldijk/MLHEPsim/venv311/lib/python3.11/site-packages/pandas/io/parsers/c_parser_wrapper.py", line 234, in read
+    chunks = self._reader.read_low_memory(nrows)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "pandas/_libs/parsers.pyx", line 814, in pandas._libs.parsers.TextReader.read_low_memory
+  File "pandas/_libs/parsers.pyx", line 875, in pandas._libs.parsers.TextReader._read_rows
+  File "pandas/_libs/parsers.pyx", line 850, in pandas._libs.parsers.TextReader._tokenize_rows
+  File "pandas/_libs/parsers.pyx", line 861, in pandas._libs.parsers.TextReader._check_tokenize_status
+  File "pandas/_libs/parsers.pyx", line 2021, in pandas._libs.parsers.raise_parser_error
+  File "/data/atlas/users/mveldijk/.pyenv/versions/3.11.9/lib/python3.11/_compression.py", line 68, in readinto
+    data = self.read(len(byte_view))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/atlas/users/mveldijk/.pyenv/versions/3.11.9/lib/python3.11/gzip.py", line 518, in read
+    raise EOFError("Compressed file ended before the "
+EOFError: Compressed file ended before the end-of-stream marker was reached
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.

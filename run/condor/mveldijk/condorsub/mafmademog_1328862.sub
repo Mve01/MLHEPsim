@@ -1,0 +1,13 @@
+executable=/project/atlas/users/mveldijk/MLHEPsim/run/condor/mveldijk/condorsub/mafmademog_1328862.sh
+JobBatchName=mafmademog_1328862
++JobCategory="short"
++UseOS="el9"
++MaxWallTime=
+request_cpus=1
+request_gpus=1
+requirements = regexp("L40S", TARGET.GPUs_DeviceName)
+request_memory=16000
+log = /project/atlas/users/mveldijk/MLHEPsim/run/mafmademog_1328862_1328862.condorlog
+output = /project/atlas/users/mveldijk/MLHEPsim/run/mafmademog_1328862_1328862.log
+error = /project/atlas/users/mveldijk/MLHEPsim/run/mafmademog_1328862_1328862.stderr
+queue

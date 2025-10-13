@@ -1,0 +1,15 @@
+artifact_uri: file:///project/atlas/Users/mveldijk/MLHEPsim/mlruns/0/dd322786d93046ea88ea4849d39b24b0/artifacts
+end_time: 1760011975301
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: dd322786d93046ea88ea4849d39b24b0
+run_name: caring-mule-340
+run_uuid: dd322786d93046ea88ea4849d39b24b0
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1760011946593
+status: 3
+tags: []
+user_id: mveldijk

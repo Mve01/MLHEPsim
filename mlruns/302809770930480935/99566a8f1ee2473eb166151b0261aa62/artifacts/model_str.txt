@@ -1,0 +1,261 @@
+MOGFlowModel(
+  (model): MADEMOG(
+    (model): AutoregressiveNormalizingFlow(
+      (bijectors): ModuleList(
+        (0): ResMADEMOGModel(
+          (net): MixtureNet(
+            (net): Sequential(
+              (0): Sequential(
+                (0): Sequential(
+                  (0): MaskedLinear(in_features=18, out_features=512, bias=True)
+                  (1): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (2): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (3): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (4): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (5): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (6): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (7): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (8): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (9): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (10): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (11): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (12): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (13): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (14): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (15): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (16): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (17): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (18): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (19): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (20): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (21): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (22): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (23): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (24): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (25): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (26): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (27): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (28): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (29): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (30): ResMaskedLinear(
+                    (layers): Sequential(
+                      (0): GELU(approximate='none')
+                      (1): MaskedLinear(in_features=512, out_features=512, bias=True)
+                      (2): GELU(approximate='none')
+                      (3): MaskedLinear(in_features=512, out_features=512, bias=True)
+                    )
+                  )
+                  (31): GELU(approximate='none')
+                )
+              )
+              (1): MaskedLinear(in_features=512, out_features=1728, bias=True)
+            )
+          )
+        )
+      )
+    )
+  )
+)

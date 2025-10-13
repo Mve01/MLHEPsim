@@ -1,0 +1,39 @@
+000 (3116032.000.000) 2025-10-08 15:51:15 Job submitted from host: <145.107.7.246:9618?addrs=145.107.7.246-9618+[2a07-8500-120-e070--3f6]-9618&alias=taai-007.nikhef.nl&noUDP&sock=schedd_11406_2550>
+...
+001 (3116032.000.000) 2025-10-08 15:51:26 Job executing on host: <145.107.4.168:9618?addrs=145.107.4.168-9618+[2a07-8500-120-e070--a8]-9618&alias=wn-pijl-007.nikhef.nl&noUDP&sock=startd_39850_5d28>
+	SlotName: slot1_1@wn-pijl-007.nikhef.nl
+	AvailableGPUs = { GPUs_GPU_8c0d809c_ed79_0f52_3d17_0196dc9a25a7 }
+	CondorScratchDir = "/scratch/condor_execute/dir_2636170"
+	Cpus = 1
+	Disk = 14166
+	GPUs = 1
+	GPUs_GPU_8c0d809c_ed79_0f52_3d17_0196dc9a25a7 = [ Id = "GPU-8c0d809c-ed79-0f52-3d17-0196dc9a25a7"; ClockMhz = 2520.0; Capability = 8.9; CoresPerCU = 128; DeviceName = "NVIDIA L40S"; DeviceUuid = "8c0d809c-ed79-0f52-3d17-0196dc9a25a7"; ECCEnabled = true; ComputeUnits = 142; NvidiaDriver = "570.124.06"; DriverVersion = 12.8; DevicePciBusId = "0000:01:00.0"; GlobalMemoryMb = 45468; MaxSupportedVersion = 12080 ]
+	Memory = 16384
+...
+006 (3116032.000.000) 2025-10-08 15:51:35 Image size of job updated: 280776
+	275  -  MemoryUsage of job (MB)
+	280776  -  ResidentSetSize of job (KB)
+...
+006 (3116032.000.000) 2025-10-08 15:52:11 Image size of job updated: 945132
+	275  -  MemoryUsage of job (MB)
+	280780  -  ResidentSetSize of job (KB)
+...
+005 (3116032.000.000) 2025-10-08 15:52:11 Job terminated.
+	(1) Normal termination (return value 1)
+		Usr 0 00:00:29, Sys 0 00:00:03  -  Run Remote Usage
+		Usr 0 00:00:00, Sys 0 00:00:00  -  Run Local Usage
+		Usr 0 00:00:29, Sys 0 00:00:03  -  Total Remote Usage
+		Usr 0 00:00:00, Sys 0 00:00:00  -  Total Local Usage
+	0  -  Run Bytes Sent By Job
+	0  -  Run Bytes Received By Job
+	0  -  Total Bytes Sent By Job
+	0  -  Total Bytes Received By Job
+	Partitionable Resources :    Usage  Request Allocated Assigned
+	   Cpus                 :     0.88        1         1 
+	   Disk (KB)            :     2           2     14166 
+	   GPUs                 :     0.00        1         1 "GPU-8c0d809c-ed79-0f52-3d17-0196dc9a25a7"
+	   GpusMemory (MB)      :  1102                       
+	   Memory (MB)          :   275       16000     16384 
+	   TimeExecute (s)      :    45                       
+	   TimeSlotBusy (s)     :    45                       
+...

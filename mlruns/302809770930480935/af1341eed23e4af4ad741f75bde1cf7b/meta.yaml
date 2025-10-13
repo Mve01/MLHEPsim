@@ -1,0 +1,15 @@
+artifact_uri: file:///project/atlas/Users/mveldijk/MLHEPsim/mlruns/302809770930480935/af1341eed23e4af4ad741f75bde1cf7b/artifacts
+end_time: 1760011946433
+entry_point_name: ''
+experiment_id: '302809770930480935'
+lifecycle_stage: active
+run_id: af1341eed23e4af4ad741f75bde1cf7b
+run_name: MADEMOG_Thu Oct  9 11:53:24 2025
+run_uuid: af1341eed23e4af4ad741f75bde1cf7b
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1760003610197
+status: 4
+tags: []
+user_id: mveldijk

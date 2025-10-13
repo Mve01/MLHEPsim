@@ -94,8 +94,10 @@ def main(config):
     torch.set_float32_matmul_precision("high")
     L.seed_everything(experiment_conf["seed"], workers=True)
 
-    # data processing
-    npy_proc = HIGGSNpyProcessor(**data_conf["input_processing"])
+    # data processing 
+    # import gc
+    # gc.collect()  # clean up any previous memory, file handles, or open gzip streams
+    npy_proc = HIGGSNpyProcessor(data_dir="ml/data/higgs/", base_file_name="HIGGS" ) #**data_conf["input_processing"]) <- this is what it used to be, but I hardcoded it to avoid csv issues
 
     f_sel = HIGGSFeatureSelector(npy_proc.npy_file, **data_conf["feature_selection"])
 
@@ -165,7 +167,7 @@ def main(config):
 
     # define callbacks
     callbacks = [
-        TQDMProgressBar(),
+        TQDMProgressBar(),           # Turn off when running on batch system
         LearningRateMonitor(logging_interval="step"),
         EarlyStopping(
             monitor="val_loss",

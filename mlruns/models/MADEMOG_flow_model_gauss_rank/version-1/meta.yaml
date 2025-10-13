@@ -1,0 +1,13 @@
+aliases: []
+creation_timestamp: 1760011974930
+current_stage: None
+description: null
+last_updated_timestamp: 1760011974930
+name: MADEMOG_flow_model_gauss_rank
+run_id: dd322786d93046ea88ea4849d39b24b0
+run_link: null
+source: file:///project/atlas/Users/mveldijk/MLHEPsim/mlruns/0/dd322786d93046ea88ea4849d39b24b0/artifacts/mlruns/302809770930480935/af1341eed23e4af4ad741f75bde1cf7b/artifacts
+status: READY
+status_message: null
+user_id: null
+version: 1
