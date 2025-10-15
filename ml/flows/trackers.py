@@ -13,9 +13,8 @@ from ml.common.utils.plot_utils import (
 
 
 class FlowTracker(Tracker):
-    def __init__(self, experiment_conf, tracker_path, n_samples=10**5, n_bins=50):
+    def __init__(self, experiment_conf, tracker_path, n_bins=50):
         super().__init__(experiment_conf, tracker_path)
-        self.n_samples = n_samples
 
         self.n_bins = n_bins
 
