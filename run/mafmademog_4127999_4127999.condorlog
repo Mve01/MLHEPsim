@@ -1,0 +1,83 @@
+000 (3161073.000.000) 2025-10-15 14:41:51 Job submitted from host: <145.107.7.246:9618?addrs=145.107.7.246-9618+[2a07-8500-120-e070--3f6]-9618&alias=taai-007.nikhef.nl&noUDP&sock=schedd_11406_2550>
+...
+001 (3161073.000.000) 2025-10-15 14:41:52 Job executing on host: <145.107.4.167:9618?addrs=145.107.4.167-9618+[2a07-8500-120-e070--a7]-9618&alias=wn-pijl-006.nikhef.nl&noUDP&sock=startd_40164_bde5>
+	SlotName: slot1_1@wn-pijl-006.nikhef.nl
+	AvailableGPUs = { GPUs_GPU_b5d11d97_8330_6520_8847_fcfe487ecbb7 }
+	CondorScratchDir = "/scratch/condor_execute/dir_1169694"
+	Cpus = 1
+	Disk = 14158
+	GPUs = 1
+	GPUs_GPU_b5d11d97_8330_6520_8847_fcfe487ecbb7 = [ Id = "GPU-b5d11d97-8330-6520-8847-fcfe487ecbb7"; ClockMhz = 2520.0; Capability = 8.9; CoresPerCU = 128; DeviceName = "NVIDIA L40S"; DeviceUuid = "b5d11d97-8330-6520-8847-fcfe487ecbb7"; ECCEnabled = true; ComputeUnits = 142; NvidiaDriver = "570.124.06"; DriverVersion = 12.8; DevicePciBusId = "0000:01:00.0"; GlobalMemoryMb = 45468; MaxSupportedVersion = 12080 ]
+	Memory = 65536
+...
+006 (3161073.000.000) 2025-10-15 14:42:01 Image size of job updated: 52864
+	52  -  MemoryUsage of job (MB)
+	52864  -  ResidentSetSize of job (KB)
+...
+006 (3161073.000.000) 2025-10-15 14:47:01 Image size of job updated: 2978060
+	2087  -  MemoryUsage of job (MB)
+	2136240  -  ResidentSetSize of job (KB)
+...
+006 (3161073.000.000) 2025-10-15 14:52:01 Image size of job updated: 19573860
+	12169  -  MemoryUsage of job (MB)
+	12460328  -  ResidentSetSize of job (KB)
+...
+006 (3161073.000.000) 2025-10-15 14:57:02 Image size of job updated: 33626936
+	32839  -  MemoryUsage of job (MB)
+	33626936  -  ResidentSetSize of job (KB)
+...
+006 (3161073.000.000) 2025-10-15 15:02:02 Image size of job updated: 44131552
+	32839  -  MemoryUsage of job (MB)
+	33626936  -  ResidentSetSize of job (KB)
+...
+006 (3161073.000.000) 2025-10-15 15:42:06 Image size of job updated: 47824448
+	32839  -  MemoryUsage of job (MB)
+	33626936  -  ResidentSetSize of job (KB)
+...
+006 (3161073.000.000) 2025-10-15 15:57:08 Image size of job updated: 47824448
+	43307  -  MemoryUsage of job (MB)
+	44346096  -  ResidentSetSize of job (KB)
+...
+006 (3161073.000.000) 2025-10-15 16:02:08 Image size of job updated: 48610824
+	43307  -  MemoryUsage of job (MB)
+	44346096  -  ResidentSetSize of job (KB)
+...
+006 (3161073.000.000) 2025-10-15 16:52:13 Image size of job updated: 49283256
+	43307  -  MemoryUsage of job (MB)
+	44346096  -  ResidentSetSize of job (KB)
+...
+006 (3161073.000.000) 2025-10-15 17:02:15 Image size of job updated: 49283256
+	45425  -  MemoryUsage of job (MB)
+	46514368  -  ResidentSetSize of job (KB)
+...
+006 (3161073.000.000) 2025-10-15 17:07:15 Image size of job updated: 50202968
+	45425  -  MemoryUsage of job (MB)
+	46514392  -  ResidentSetSize of job (KB)
+...
+006 (3161073.000.000) 2025-10-15 17:12:15 Image size of job updated: 50202968
+	45728  -  MemoryUsage of job (MB)
+	46824600  -  ResidentSetSize of job (KB)
+...
+006 (3161073.000.000) 2025-10-15 17:17:16 Image size of job updated: 50202968
+	45740  -  MemoryUsage of job (MB)
+	46837512  -  ResidentSetSize of job (KB)
+...
+005 (3161073.000.000) 2025-10-15 17:55:22 Job terminated.
+	(1) Normal termination (return value 0)
+		Usr 0 04:48:18, Sys 0 12:56:25  -  Run Remote Usage
+		Usr 0 00:00:00, Sys 0 00:00:00  -  Run Local Usage
+		Usr 0 04:48:18, Sys 0 12:56:25  -  Total Remote Usage
+		Usr 0 00:00:00, Sys 0 00:00:00  -  Total Local Usage
+	0  -  Run Bytes Sent By Job
+	0  -  Run Bytes Received By Job
+	0  -  Total Bytes Sent By Job
+	0  -  Total Bytes Received By Job
+	Partitionable Resources :    Usage  Request Allocated Assigned
+	   Cpus                 :     0.78        1         1 
+	   Disk (KB)            :     2           2     14158 
+	   GPUs                 :     0.00        1         1 "GPU-b5d11d97-8330-6520-8847-fcfe487ecbb7"
+	   GpusMemory (MB)      :  1926                       
+	   Memory (MB)          : 45740       64000     65536 
+	   TimeExecute (s)      : 11610                       
+	   TimeSlotBusy (s)     : 11610                       
+...
