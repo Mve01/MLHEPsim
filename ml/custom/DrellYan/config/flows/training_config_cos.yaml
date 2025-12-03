@@ -1,0 +1,18 @@
+training_config:
+  learning_rate: 1.e-4
+  epochs: 1000
+
+  compile: False
+
+  optimizer: Adam
+  early_stop_patience: 20
+  weight_decay: 1.e-7
+
+  scheduler:
+    scheduler_name: CosineAnnealingWarmRestarts
+    interval: epoch
+    reduce_lr_on_epoch: null
+    scheduler_params:
+      T_0: 20
+      T_mult: 2
+      eta_min: 1.e-7
