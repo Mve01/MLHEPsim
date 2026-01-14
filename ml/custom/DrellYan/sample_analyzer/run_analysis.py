@@ -5,6 +5,7 @@ import sys
 import os
 import argparse
 import glob
+import yaml
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..'))
 sys.path.insert(0, project_root)
 
@@ -63,15 +64,41 @@ def main(Generate=True):
     data_dir = "/project/atlas/users/mveldijk/MLHEPsimtest/MLHEPsim/ml/data/drellyan/DRELLYAN.npy"
     variables_json = 'ml/data/drellyan/variables.json'
     
+    # Load data config to get mass range
+    config_path = os.path.join(project_root, 'ml/custom/DrellYan/config/flows/data_config.yaml')
+    with open(config_path, 'r') as f:
+        data_config = yaml.safe_load(f)
+    
+    # Get mass range from config with 10 GeV buffer
+    input_proc = data_config['data_config']['input_processing']
+    mass_region = input_proc['mass_region']
+    
+    if mass_region == 'full_data':
+        min_mass_config = input_proc['min_mass']
+        max_mass_config = input_proc['max_mass']
+        mass_cut_lower = None
+        mass_cut_upper = None
+        mass_range_min = min_mass_config
+        mass_range_max = max_mass_config
+        
+    elif mass_region == 'sidebands':
+        min_mass_config = input_proc['sideband_lower_min']
+        max_mass_config = input_proc['sideband_upper_max']
+        # The excluded region is between the sidebands
+        mass_cut_lower = input_proc['sideband_lower_max']
+        mass_cut_upper = input_proc['sideband_upper_min']
+        # Overall range for unpreprocessed data (removes Z peak, keeps middle)
+        mass_range_min = input_proc['sideband_lower_min']
+        mass_range_max = input_proc['sideband_upper_max']
+    
+    mass_min = min_mass_config - 10
+    mass_max = max_mass_config + 10
+    
     # Automatically find the latest model
     model_name = get_latest_model(
         mlruns_dir="mlruns/models",
-        model_pattern="MADEMOG_flow_model*sidebands*"  # Only match sidebands models
+        model_pattern="MAFMADEMOG_flow_model*"  # Match all MAFMADEMOG models
     )
-    
-    # Mass range for plotting 
-    mass_min = 100
-    mass_max = 170
     
     # Correlation plot settings
     gridsize = 200  # Number of bins for 2D histograms in correlation plots
@@ -81,7 +108,9 @@ def main(Generate=True):
     print("Drell-Yan Sample Analysis")
     print("=" * 80)
     analyzer = DrellYanSampleAnalyzer(
-        data_dir, variables_json, model_name
+        data_dir, variables_json, model_name,
+        mass_cut_lower=mass_cut_lower, mass_cut_upper=mass_cut_upper,
+        mass_range_min=mass_range_min, mass_range_max=mass_range_max
     )
     
     # Generate samples

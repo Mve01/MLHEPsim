@@ -5,8 +5,8 @@ training_config:
   compile: False
 
   optimizer: Adam
-  early_stop_patience: 20
-  weight_decay: 1.e-7
+  early_stop_patience: 5
+  weight_decay: 1.e-4
 
   scheduler:
     scheduler_name: ReduceLROnPlateau

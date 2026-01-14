@@ -3,7 +3,7 @@ defaults:
   - data_config
   - training_config
   - experiment_config
-  - model_config: made_mog
+  - model_config: maf_made_mog
   - override hydra/hydra_logging: disabled
   - override hydra/job_logging: disabled
 

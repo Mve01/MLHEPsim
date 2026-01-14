@@ -90,6 +90,19 @@ def main(config):
 
     # model configuration
     logging.info(f"Setting up {model_conf['model_name']} model.")
+    
+    # Log key configuration parameters
+    logging.info(f"batch_size: {data_conf['dataloader_config']['batch_size']}")
+    if 'num_flows' in model_conf:
+        logging.info(f"num_flows: {model_conf['num_flows']}")
+    if 'num_hidden_layers' in model_conf:
+        logging.info(f"num_hidden_layers: {model_conf['num_hidden_layers']}")
+    if 'hidden_layer_dim' in model_conf:
+        logging.info(f"hidden_layer_dim: {model_conf['hidden_layer_dim']}")
+    if 'res_layers_in_block' in model_conf:
+        logging.info(f"res_layers_in_block: {model_conf['res_layers_in_block']}")
+    if 'n_mixtures' in model_conf:
+        logging.info(f"n_mixtures: {model_conf['n_mixtures']}")
 
     # https://arxiv.org/abs/1410.8516
     if model_conf["model_name"].lower() == "nice":

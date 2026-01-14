@@ -9,7 +9,7 @@ rm -f /project/atlas/users/mveldijk/MLHEPsimtest/MLHEPsim/ml/custom/DrellYan/run
 rm -f /project/atlas/users/mveldijk/MLHEPsimtest/MLHEPsim/condor/mveldijk/condorsub/mafmademog*
 rm -f /project/atlas/users/mveldijk/MLHEPsimtest/MLHEPsim/condor/mveldijk/condorsub/enviromentvariables*
 
-condorsub -J mafmademog -q medium -n 1 -g 1 -m 64000 \
+condorsub -J mafmademog -q short -n 1 -g 1 -m 64000 \
 "source /etc/profile && \
 source /project/atlas/users/mveldijk/MLHEPsimtest/MLHEPsim/venv311/bin/activate && \
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True && \

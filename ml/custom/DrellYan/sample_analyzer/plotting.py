@@ -17,7 +17,8 @@ def get_range_limits(data, percentile_range=0.1):
 
 
 def plot_feature_comparison(real_data, generated_data, selected_features, selection, 
-                           variables, output_path=None, bins=50, n_cols=3):
+                           variables, output_path=None, bins=50, n_cols=3, 
+                           mass_cut_lower=None, mass_cut_upper=None):
     """
     Plot comparison of all features between real and generated data with ratio plots.
     
@@ -29,6 +30,10 @@ def plot_feature_comparison(real_data, generated_data, selected_features, select
         Feature selection DataFrame with type information
     variables : dict
         Variables configuration dictionary
+    mass_cut_lower : float, optional
+        Lower boundary of mass cut region (excluded from training)
+    mass_cut_upper : float, optional
+        Upper boundary of mass cut region (excluded from training)
     """
     # Calculate grid dimensions
     n_features = len(selected_features)
@@ -88,7 +93,7 @@ def plot_feature_comparison(real_data, generated_data, selected_features, select
         bin_centers = (bins_edges[:-1] + bins_edges[1:]) / 2
         
         # Main plot
-        ax_main.step(bin_centers, hist_real, color='blue', label='Real Data', where='mid', lw=2)
+        ax_main.step(bin_centers, hist_real, color='blue', label='Real Data (Unpreprocessed)', where='mid', lw=2)
         ax_main.step(bin_centers, hist_gen, color='red', label='Generated', where='mid', lw=2)
         
         # Formatting main plot
@@ -133,7 +138,8 @@ def plot_feature_comparison(real_data, generated_data, selected_features, select
     print(f"\nFeature comparison plot saved to: {output_path}")
 
 
-def plot_system_variables_comparison(real_system_vars, generated_system_vars, output_path=None, bins=50, log_scale=False):
+def plot_system_variables_comparison(real_system_vars, generated_system_vars, output_path=None, bins=50, log_scale=False,
+                                    mass_cut_lower=None, mass_cut_upper=None):
     """
     Plot 1D histogram comparison of system-level variables with ratio plots.
     
@@ -147,6 +153,10 @@ def plot_system_variables_comparison(real_system_vars, generated_system_vars, ou
         Tuple containing (Z_pt, Z_eta, Z_phi, Z_Y, cos_theta_star) for generated data
     log_scale : bool
         If True, use logarithmic y-axis
+    mass_cut_lower : float, optional
+        Lower boundary of mass cut region (excluded from training)
+    mass_cut_upper : float, optional
+        Upper boundary of mass cut region (excluded from training)
     """
     from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
     
@@ -209,7 +219,7 @@ def plot_system_variables_comparison(real_system_vars, generated_system_vars, ou
         bin_centers = (bins_edges[:-1] + bins_edges[1:]) / 2
         
         # Main plot
-        ax_main.step(bin_centers, hist_real, color='blue', label='Real Data', where='mid', lw=2)
+        ax_main.step(bin_centers, hist_real, color='blue', label='Real Data (Unpreprocessed)', where='mid', lw=2)
         ax_main.step(bin_centers, hist_gen, color='red', label='Generated', where='mid', lw=2)
         
         # Formatting main plot
@@ -263,18 +273,27 @@ def plot_system_variables_comparison(real_system_vars, generated_system_vars, ou
 
 
 def plot_invariant_mass(real_mass, generated_mass, output_path=None, bins=100, 
-                       x_min=110, x_max=170):
+                       x_min=110, x_max=170, mass_cut_lower=None, mass_cut_upper=None):
     """
     Plot comparison of invariant mass distributions with ratio plot.
+    
+    Parameters
+    ----------
+    mass_cut_lower : float, optional
+        Lower boundary of mass cut region (excluded from training)
+    mass_cut_upper : float, optional
+        Upper boundary of mass cut region (excluded from training)
     """
     from matplotlib.gridspec import GridSpec
     
-    # Create figure with two subplots: main plot and ratio plot
-    fig = plt.figure(figsize=(10, 8))
-    gs = GridSpec(2, 1, figure=fig, height_ratios=[4, 1], hspace=0.08)
+    # Create figure with four subplots: main plot, ratio, zoomed gap, gap ratio
+    fig = plt.figure(figsize=(16, 8))
+    gs = GridSpec(2, 2, figure=fig, height_ratios=[4, 1], hspace=0.08, wspace=0.3)
     
-    ax_main = fig.add_subplot(gs[0])
-    ax_ratio = fig.add_subplot(gs[1], sharex=ax_main)
+    ax_main = fig.add_subplot(gs[0, 0])
+    ax_ratio = fig.add_subplot(gs[1, 0], sharex=ax_main)
+    ax_gap = fig.add_subplot(gs[0, 1])
+    ax_gap_ratio = fig.add_subplot(gs[1, 1], sharex=ax_gap)
 
     # Create bin edges for exact whole number bins
     # If bins is an integer, create evenly spaced bins at whole numbers
@@ -291,24 +310,26 @@ def plot_invariant_mass(real_mass, generated_mass, output_path=None, bins=100,
     else:
         bin_edges = bins
     
-    # Create histograms with exact bin edges (raw counts)
-    hist_real, bins_real = np.histogram(real_mass, bins=bin_edges, density=False)
-    hist_gen, bins_gen = np.histogram(generated_mass, bins=bin_edges, density=False)
-    
-    # Normalize to same total for fair comparison
-    # Scale generated to match the total count of real data
-    total_real = hist_real.sum()
-    total_gen = hist_gen.sum()
-    hist_gen_normalized = hist_gen * (total_real / total_gen)
+    # Create histograms with density normalization (area = 1)
+    hist_real, bins_real = np.histogram(real_mass, bins=bin_edges, density=True)
+    hist_gen, bins_gen = np.histogram(generated_mass, bins=bin_edges, density=True)
     
     # Plot main histogram
     bin_centers = (bins_real[:-1] + bins_real[1:]) / 2
-    ax_main.step(bin_centers, hist_real, color='blue', label='Real Data', where='mid', lw=2)
-    ax_main.step(bin_centers, hist_gen_normalized, color='red', label='Generated', where='mid', lw=2)
+    ax_main.step(bin_centers, hist_real, color='blue', label='Real Data (Unpreprocessed)', where='mid', lw=2)
+    ax_main.step(bin_centers, hist_gen, color='red', label='Generated', where='mid', lw=2)
+    
+    # Add mass cut indicators if provided
+    if mass_cut_lower is not None and mass_cut_upper is not None:
+        y_max_vis = max(max(hist_real), max(hist_gen)) * 1.1
+        ax_main.axvspan(mass_cut_lower, mass_cut_upper, alpha=0.15, color='gray', 
+                       label=f'Excluded Region ({mass_cut_lower}-{mass_cut_upper} GeV)')
+        ax_main.axvline(mass_cut_lower, color='gray', linestyle='--', lw=1.5, alpha=0.7)
+        ax_main.axvline(mass_cut_upper, color='gray', linestyle='--', lw=1.5, alpha=0.7)
     
     # Formatting main plot
-    y_max = max(max(hist_real), max(hist_gen_normalized)) * 1.1
-    ax_main.set_ylabel('Events (Normalized)', fontsize=12)
+    y_max = max(max(hist_real), max(hist_gen)) * 1.1
+    ax_main.set_ylabel('Density', fontsize=12)
     ax_main.set_xlim(x_min, x_max)
     ax_main.set_ylim(0, y_max)
     ax_main.set_title('Dimuon Invariant Mass Distribution', fontsize=14)
@@ -316,16 +337,15 @@ def plot_invariant_mass(real_mass, generated_mass, output_path=None, bins=100,
     ax_main.legend(fontsize=11)
     ax_main.tick_params(labelbottom=False)
     
-    # Ratio plot: Real / Generated
-    # Avoid division by zero - use real/generated since real has zeros in mass cut region
-    ratio = np.divide(hist_real, hist_gen_normalized, 
-                     out=np.zeros_like(hist_real, dtype=float), 
-                     where=hist_gen_normalized!=0)
+    # Ratio plot: Generated / Real
+    ratio = np.divide(hist_gen, hist_real, 
+                     out=np.zeros_like(hist_gen, dtype=float), 
+                     where=hist_real!=0)
     
     ax_ratio.step(bin_centers, ratio, color='black', where='mid', lw=1.5)
     ax_ratio.axhline(y=1, color='gray', linestyle='--', lw=1, alpha=0.7)
     ax_ratio.set_xlabel('Dimuon Invariant Mass [GeV]', fontsize=12)
-    ax_ratio.set_ylabel('Real/Gen', fontsize=10)
+    ax_ratio.set_ylabel('Gen/Real', fontsize=10)
     ax_ratio.set_xlim(x_min, x_max)
     ax_ratio.grid(True, linestyle='--', alpha=0.7)
     
@@ -337,6 +357,62 @@ def plot_invariant_mass(real_mass, generated_mass, output_path=None, bins=100,
         ax_ratio.set_ylim(ratio_min, ratio_max)
     else:
         ax_ratio.set_ylim(0, 2)
+    
+    # ===== RIGHT SIDE: ZOOMED GAP REGION =====
+    if mass_cut_lower is not None and mass_cut_upper is not None:
+        gap_margin = 2  # GeV on each side
+        gap_x_min = mass_cut_lower - gap_margin
+        gap_x_max = mass_cut_upper + gap_margin
+        
+        # Use same bin edges as full plot, but filter to gap region
+        gap_mask = (bin_centers >= gap_x_min) & (bin_centers <= gap_x_max)
+        gap_bin_centers = bin_centers[gap_mask]
+        gap_hist_real = hist_real[gap_mask]
+        gap_hist_gen = hist_gen[gap_mask]
+        
+        # Plot gap histogram (using same density normalization as full plot)
+        ax_gap.step(gap_bin_centers, gap_hist_real, color='blue', label='Real Data', where='mid', lw=2)
+        ax_gap.step(gap_bin_centers, gap_hist_gen, color='red', label='Generated', where='mid', lw=2)
+        
+        # Add exclusion region shading
+        y_max_gap = max(max(gap_hist_real) if len(gap_hist_real) > 0 else 0, 
+                        max(gap_hist_gen) if len(gap_hist_gen) > 0 else 0) * 1.1
+        ax_gap.axvspan(mass_cut_lower, mass_cut_upper, alpha=0.15, color='gray')
+        ax_gap.axvline(mass_cut_lower, color='gray', linestyle='--', lw=1.5, alpha=0.7)
+        ax_gap.axvline(mass_cut_upper, color='gray', linestyle='--', lw=1.5, alpha=0.7)
+        
+        # Formatting gap plot
+        ax_gap.set_ylabel('Density', fontsize=12)
+        ax_gap.set_xlim(gap_x_min, gap_x_max)
+        ax_gap.set_ylim(0, y_max_gap)
+        ax_gap.set_title(f'Gap Region Detail ({mass_cut_lower}-{mass_cut_upper} GeV)', fontsize=14)
+        ax_gap.grid(True, linestyle='--', alpha=0.7)
+        ax_gap.legend(fontsize=11)
+        ax_gap.tick_params(labelbottom=False)
+        
+        # Gap ratio plot
+        gap_ratio = np.divide(gap_hist_gen, gap_hist_real,
+                             out=np.zeros_like(gap_hist_gen, dtype=float),
+                             where=gap_hist_real!=0)
+        
+        ax_gap_ratio.step(gap_bin_centers, gap_ratio, color='black', where='mid', lw=1.5)
+        ax_gap_ratio.axhline(y=1, color='gray', linestyle='--', lw=1, alpha=0.7)
+        ax_gap_ratio.set_xlabel('Dimuon Invariant Mass [GeV]', fontsize=12)
+        ax_gap_ratio.set_ylabel('Gen/Real', fontsize=10)
+        ax_gap_ratio.set_xlim(gap_x_min, gap_x_max)
+        ax_gap_ratio.grid(True, linestyle='--', alpha=0.7)
+        
+        # Set y-limits for gap ratio with tighter bounds
+        gap_ratio_nonzero = gap_ratio[gap_ratio > 0]
+        if len(gap_ratio_nonzero) > 0:
+            # Use 5-95 percentile range with moderate margins for better detail
+            ratio_center = np.median(gap_ratio_nonzero)
+            ratio_range = np.percentile(gap_ratio_nonzero, 95) - np.percentile(gap_ratio_nonzero, 5)
+            gap_ratio_min = max(0.7, ratio_center - ratio_range * 1.5)
+            gap_ratio_max = min(1.3, ratio_center + ratio_range * 1.5)
+            ax_gap_ratio.set_ylim(gap_ratio_min, gap_ratio_max)
+        else:
+            ax_gap_ratio.set_ylim(0.7, 1.3)
     
     # Save plot
     if output_path is None:
@@ -415,7 +491,7 @@ def plot_pt_negative_comparison(real_pt_negative, generated_pt_negative, output_
     print(f"PT Negative plot saved to: {output_path}")
 
 def plot_correlation_comparison(real_data, generated_data, selected_features, variables,
-                                gridsize, output_path=None):
+                                gridsize, output_path=None, mass_cut_lower=None, mass_cut_upper=None):
     """
     Plot pairwise correlations for (pt1 vs pt2), (eta1 vs eta2), (phi1 vs phi2).
     
@@ -430,6 +506,10 @@ def plot_correlation_comparison(real_data, generated_data, selected_features, va
         Variables configuration dictionary
     gridsize : int
         Number of bins for 2D histograms (default: 200)
+    mass_cut_lower : float, optional
+        Lower boundary of mass cut region (excluded from training)
+    mass_cut_upper : float, optional
+        Upper boundary of mass cut region (excluded from training)
     """
     # Determine which feature naming convention is being used
     available_features = list(variables['colnames'].keys())
@@ -481,32 +561,26 @@ def plot_correlation_comparison(real_data, generated_data, selected_features, va
         ax_gen = axs[row, 1]
         ax_diff = axs[row, 2]
         
-        # Use percentile-based range to exclude outliers
-        percentile_range = 0.5  # Exclude bottom and top 0.5% outliers
+        # Use percentile-based range to exclude top 5% outliers
+        upper_percentile = 95.0
         
-        # Calculate range limits for x-axis
-        x_real_lower = np.percentile(x_real, percentile_range)
-        x_real_upper = np.percentile(x_real, 100 - percentile_range)
-        x_gen_lower = np.percentile(x_gen, percentile_range)
-        x_gen_upper = np.percentile(x_gen, 100 - percentile_range)
+        # Combine real and generated data to determine consistent range
+        x_combined = np.concatenate([x_real, x_gen])
+        y_combined = np.concatenate([y_real, y_gen])
         
-        x_min = min(x_real_lower, x_gen_lower)
-        x_max = max(x_real_upper, x_gen_upper)
-        x_range = x_max - x_min
-        x_min = x_min - 0.05 * x_range
-        x_max = x_max + 0.05 * x_range
+        # Calculate range for x-axis
+        x_lower = np.percentile(x_combined, 0)
+        x_upper = np.percentile(x_combined, upper_percentile)
+        x_range = x_upper - x_lower
+        x_min = x_lower - 0.05 * x_range
+        x_max = x_upper + 0.05 * x_range
         
-        # Calculate range limits for y-axis
-        y_real_lower = np.percentile(y_real, percentile_range)
-        y_real_upper = np.percentile(y_real, 100 - percentile_range)
-        y_gen_lower = np.percentile(y_gen, percentile_range)
-        y_gen_upper = np.percentile(y_gen, 100 - percentile_range)
-        
-        y_min = min(y_real_lower, y_gen_lower)
-        y_max = max(y_real_upper, y_gen_upper)
-        y_range = y_max - y_min
-        y_min = y_min - 0.05 * y_range
-        y_max = y_max + 0.05 * y_range
+        # Calculate range for y-axis
+        y_lower = np.percentile(y_combined, 0)
+        y_upper = np.percentile(y_combined, upper_percentile)
+        y_range = y_upper - y_lower
+        y_min = y_lower - 0.05 * y_range
+        y_max = y_upper + 0.05 * y_range
         
         # Number of bins for 2D histogram
         n_bins = gridsize
@@ -542,7 +616,7 @@ def plot_correlation_comparison(real_data, generated_data, selected_features, va
         plt.colorbar(im, ax=ax_diff, label='Real - Generated')
         
         # Formatting
-        ax_real.set_title(f"Real: {label1} vs {label2}", fontsize=12)
+        ax_real.set_title(f"Real (Unpreprocessed): {label1} vs {label2}", fontsize=12)
         ax_gen.set_title(f"Generated: {label1} vs {label2}", fontsize=12)
         ax_diff.set_title(f"Difference: {label1} vs {label2}", fontsize=12)
         

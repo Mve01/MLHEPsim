@@ -78,6 +78,11 @@ class DrellYanNpyProcessor(NpyProcessor):
         self.sideband_upper_max = sideband_upper_max
         self.list_data_features = list_data_features
         
+        # Override self.features from config instead of loading from variables.json
+        # All DrellYan features are continuous variables
+        self.features = {
+            "colnames": {feature: "cont" for feature in list_data_features}
+        }
 
         if self.hold_mode:
             self.hold_npy_partition_1 = self.npy_file.replace(".npy", "_hold_partition_1.npy")
@@ -183,43 +188,65 @@ class DrellYanNpyProcessor(NpyProcessor):
         file_path_2 = ("/data/atlas/users/kdevries/hmumuml/RunIII/mc23_13p6TeV.700890.Sh_2214_Zmumu_mZ_105_ECMS_CFilterBVeto_HmumuSR_skimmed_prepared_FSR.root")
         file_path_3 = ("/data/atlas/users/kdevries/hmumuml/RunIII/mc23_13p6TeV.700891.Sh_2214_Zmumu_mZ_105_ECMS_CVetoBVeto_HmumuSR_skimmed_prepared_FSR.root")
 
+        file_path_4 = ("/dcache/atlas/higgs/Hmumu/RunIII/NTuple_MC23a/mc23_13p6TeV.700789.Sh_2214_Zmumu_maxHTpTV2_BFilter_HmumuSR.root")
+        file_path_5 = ("/dcache/atlas/higgs/Hmumu/RunIII/NTuple_MC23a/mc23_13p6TeV.700790.Sh_2214_Zmumu_maxHTpTV2_CFilterBVeto_HmumuSR.root")
+        file_path_6 = ("/dcache/atlas/higgs/Hmumu/RunIII/NTuple_MC23a/mc23_13p6TeV.700791.Sh_2214_Zmumu_maxHTpTV2_CVetoBVeto_HmumuSR.root")
+
         # Load and concatenate data from all files
         all_filtered_data = []
-        for file_path in [file_path_1, file_path_2, file_path_3]:
+        counter = 0
+        for file_path in [file_path_4, file_path_5, file_path_6]:
             with uproot.open(file_path) as file_drell_yan:
                 tree_drell_yan = file_drell_yan["tree_Hmumu"]
 
                 # Mass window cut - full data or sidebands
                 if mass_region == "full_data":
-                    cut_expression = f"(Muons_Minv_MuMu >= {min_mass}) & (Muons_Minv_MuMu <= {max_mass})"
-                    logging.info(f"Using FULL DATA: [{min_mass}, {max_mass}] GeV")
+                    mass_cut = f"(Muons_Minv_MuMu >= {min_mass}) & (Muons_Minv_MuMu <= {max_mass})"
+                    if counter == 0:
+                        logging.info(f"Using FULL DATA: [{min_mass}, {max_mass}] GeV")
                 elif mass_region == "sidebands":
-                    cut_expression = (f"((Muons_Minv_MuMu >= {sideband_lower_min}) & (Muons_Minv_MuMu <= {sideband_lower_max})) | "
+                    mass_cut = (f"((Muons_Minv_MuMu >= {sideband_lower_min}) & (Muons_Minv_MuMu <= {sideband_lower_max})) | "
                                     f"((Muons_Minv_MuMu >= {sideband_upper_min}) & (Muons_Minv_MuMu <= {sideband_upper_max}))")
-                    logging.info(f"Using SIDEBANDS: [{sideband_lower_min}, {sideband_lower_max}] GeV and [{sideband_upper_min}, {sideband_upper_max}] GeV")
+                    if counter == 0:
+                        logging.info(f"Using SIDEBANDS: [{sideband_lower_min}, {sideband_lower_max}] GeV and [{sideband_upper_min}, {sideband_upper_max}] GeV")
                 else:
                     raise ValueError(f"Invalid mass_region: {mass_region}. Must be 'full_data' or 'sidebands'.")
 
-                # Load requested features directly with cut applied
+                if counter == 0:
+                    logging.info(f"Will apply eta cut: |eta| < 2.5 for both muons after loading")
+                    counter += 1
+
+                # Load requested features with only mass cut
+                # Eta cut will be applied after flattening jagged arrays
                 features_to_load = list(set(list_data_features + ["Muons_Minv_MuMu"]))
-                data = tree_drell_yan.arrays(features_to_load, library="np", cut=cut_expression)
+                data = tree_drell_yan.arrays(features_to_load, library="np", cut=mass_cut)
     
-            # Stack features into matrix
-            # Need to flatten jagged arrays (arrays of single-element arrays)
+            # Stack features into matrix and flatten jagged arrays
             arrays = []
             for feat in list_data_features:
                 arr = np.asarray(data[feat])
                 # If dtype is 'object', it's a jagged array - extract the scalar values
                 if arr.dtype == object:
                     arr = np.array([x[0] if isinstance(x, np.ndarray) else x for x in arr], dtype=np.float32)
-                    logging.info(f"Flattened jagged array for {feat}: shape {arr.shape}, dtype {arr.dtype}")
                 arrays.append(arr)
             
             self.x = np.column_stack(arrays).astype(np.float32)
+            
+            # Apply eta cut: both muons must be within detector acceptance |eta| < 2.5
+            eta_mask = (
+                (self.x[:, 0] >= -2.5) & (self.x[:, 0] <= 2.5) &  # Muons_Pos_Eta
+                (self.x[:, 1] >= -2.5) & (self.x[:, 1] <= 2.5)    # Muons_Neg_Eta
+            )
+            self.x = self.x[eta_mask]
+            
             all_filtered_data.append(self.x) 
 
         dataset = np.concatenate(all_filtered_data, axis=0)
         logging.info(f"Final Drell-Yan dataset shape after cuts: {dataset.shape}")
+        
+        # Shuffle the dataset before saving to ensure random sampling 
+        np.random.shuffle(dataset)
+        logging.info("Shuffled dataset before saving")
 
         np.save(self.npy_file, dataset)
         logging.info(f"saved {self.npy_file} of shape {dataset.shape}!")

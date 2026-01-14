@@ -12,18 +12,18 @@ data_config:
     use_hold: False
     hold_ratio: 0.5
     # Mass region selection: 'full_data' or 'sidebands'
-    mass_region: sidebands  
+    mass_region: sidebands
     # Signal region mass range
-    min_mass: 110 # The data files have a pre selection of mZ > 105 GeV with edge effects up to roughly 107 GeV 
+    min_mass: 110 # Data files 1,2 and 3 have a pre selection of mZ > 105 GeV with edge effects up to roughly 107 GeV 
     max_mass: 160
     # Sideband mass ranges 
-    sideband_lower_min: 110 
-    sideband_lower_max: 120
-    sideband_upper_min: 130
+    sideband_lower_min: 100 
+    sideband_lower_max: 122
+    sideband_upper_min: 128
     sideband_upper_max: 180
 
   feature_selection:
-    n_data: 100000  #for testing use 100000 & null for all data during actual training #Warning don't use less than 100k for DrellYan as it will cause issues with batch_size 
+    n_data: 50000  #for testing use 100000 & null for all data during actual training 
     keep_names: ["Muons_Pos_Eta", "Muons_Neg_Eta", "Muons_Pos_PT", "Muons_Neg_PT", "Muons_Pos_Phi", "Muons_Neg_Phi"]
 
 
