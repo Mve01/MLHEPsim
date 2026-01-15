@@ -454,3 +454,13 @@ outputs/
 *.onnx
 
 *.p
+*.p
+
+# Experiment outputs and logs
+ml/custom/*/metrics/
+mlruns/0/
+mlruns/*/
+run/*.condorlog
+run/*.stderr
+run/condor/
+condor/mveldijk/
