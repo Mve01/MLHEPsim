@@ -215,9 +215,11 @@ class RescalingHandler:
         self.scalers = scalers
 
     def _handle_rescale_type(self, sample):
-        cont_idx = self.selection[self.selection["type"] == "cont"].index
+        # Include both "cont" and "uni" (uniform/periodic) types in continuous scaling
+        # Phi angles are type "uni" but are scaled with the continuous scalers
+        cont_idx = self.selection[self.selection["type"].isin(["cont", "uni"])].index
         disc_idx = self.selection[self.selection["type"] == "disc"].index
-        other_idx = self.selection[(self.selection["type"] != "cont") & (self.selection["type"] != "disc")].index
+        other_idx = self.selection[~self.selection["type"].isin(["cont", "uni", "disc"])].index
 
         scale_dct = {"cont": None, "disc": None, "other": None}
 
@@ -256,7 +258,8 @@ class RescalingHandler:
 
             if forward:
                 for scaler in cont_scaler_lst:
-                    cont_sample = scaler[1].fit_transform(cont_sample)
+                    # Use transform() not fit_transform() - scalers are already fitted!
+                    cont_sample = scaler[1].transform(cont_sample)
             else:
                 for scaler in cont_scaler_lst[::-1]:
                     cont_sample = scaler[1].inverse_transform(cont_sample)
@@ -265,12 +268,15 @@ class RescalingHandler:
             disc_scale = True
             disc_sample, disc_scaler_lst, disc_idx = scale_dct.pop("disc")
 
-            if forward:
-                for scaler in disc_scaler_lst:
-                    disc_sample = scaler[1].fit_transform(disc_sample)
-            else:
-                for scaler in disc_scaler_lst[::-1]:
-                    disc_sample = scaler[1].inverse_transform(disc_sample)
+            # Only apply scaling if scalers exist (disc_rescale_type may be None)
+            if disc_scaler_lst is not None:
+                if forward:
+                    for scaler in disc_scaler_lst:
+                        # Use transform() not fit_transform() - scalers are already fitted!
+                        disc_sample = scaler[1].transform(disc_sample)
+                else:
+                    for scaler in disc_scaler_lst[::-1]:
+                        disc_sample = scaler[1].inverse_transform(disc_sample)
 
         if scale_dct["other"] is not None:
             other_scale = True

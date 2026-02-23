@@ -186,14 +186,23 @@ class FeatureSelector(ABC):
 
 class Preprocessor:
     def __init__(self, cont_rescale_type, disc_rescale_type=None, no_process=None):
-        """General preprocessor for continious and discrete data in numpy arrays.
+        """General preprocessor for continuous and discrete data in numpy arrays.
+        
+        Features are processed in their original order from the input data,
+        preserving physics-motivated feature groupings (e.g., Jets → Leptons → MET).
+        
+        Both "cont" and "uni" (uniform/periodic) type features are scaled using cont_rescale_type.
+        For normalizing flows with Gaussian base distributions, scaling uniform features
+        (e.g., Phi angles) to Gaussian makes learning easier (Gaussian → Gaussian vs Gaussian → Uniform).
 
         Parameters
         ----------
-        rescale_type (continuous or discrete) : str
-            Rescale type, see `rescale_data` in `ml.common.data_utils.feature_scaling`.
+        cont_rescale_type : str
+            Rescale type for continuous features (including "uni" type), see `rescale_data` in `ml.common.data_utils.feature_scaling`.
+        disc_rescale_type : str, optional
+            Rescale type for discrete features, by default None.
         no_process : list of str, optional
-            List of column types to not process (e.g. labels), by default None.
+            List of column types to not process (e.g., ['weight']), by default None.
         """
         super().__init__()
         self.cont_rescale_type, self.disc_rescale_type = cont_rescale_type, disc_rescale_type
@@ -201,11 +210,11 @@ class Preprocessor:
         self.selection = None
 
     def __call__(self, data: np.ndarray, selection: pd.DataFrame, *args, **kwargs):
-        logging.info(f"Preprocessing data using cont. {self.cont_rescale_type} and disc. {self.disc_rescale_type}.")
+        logging.info(f"Preprocessing data using cont. {self.cont_rescale_type} and disc. {self.disc_rescale_type} (preserving feature order).")
         return self.preprocess(data, selection)
 
     def preprocess(self, data: np.ndarray, selection: pd.DataFrame, *args, no_rescale=False, **kwargs):
-        """Preprocess data.
+        """Preprocess data in original order (preserves physics-motivated feature ordering).
 
         Parameters
         ----------
@@ -224,124 +233,64 @@ class Preprocessor:
             self.no_process = []
 
         # make selections where select is True (drop columns where select is False)
-        # data is already selected to be disc or cont!
         selection = selection[selection["select"] == True].reset_index(drop=True)
 
-        # make a mask for columns that are not processed and select both processed and not processed columns
+        # Initialize output array (will be filled with scaled features in original positions)
+        processed_data = np.zeros_like(data)
+        
+        # Separate features by type for fitting scalers
         type_mask = selection["type"].isin(self.no_process)
-        process_sel = selection[~type_mask]
+        
+        disc_sel = selection[~type_mask & (selection["type"] == "disc")]
+        # Include both "cont" and "uni" (uniform/periodic) features for continuous scaling
+        # Uniform features (Phi angles) benefit from Gaussian rank scaling: Uniform → Gaussian
+        cont_sel = selection[~type_mask & selection["type"].isin(["cont", "uni"])]
         other_sel = selection[type_mask]
-
-        # get discrete and continious selections of features (for index and name selection)
-        self.disc_sel = process_sel[process_sel["type"] == "disc"]["feature"]
-        self.cont_sel = process_sel[process_sel["type"].isin(["cont", "uni"])]["feature"]
-
-        # check case if no discrete features and do disc normalization if discrete features exist
-        if len(self.disc_sel) > 0:
-            disc_x, disc_scaler, disc_names = self.fit_discrete(data, no_rescale)
+        
+        # Fit and transform discrete features as a group
+        if len(disc_sel) > 0:
+            disc_indices = disc_sel.index.tolist()
+            disc_data = data[:, disc_indices]
+            if no_rescale:
+                disc_scaled = disc_data
+                disc_scaler = [("none", None)]
+            else:
+                disc_scaled, disc_scaler = rescale_discrete_data(disc_data, self.disc_rescale_type)
+            # Place scaled discrete features back in their original positions
+            for i, idx in enumerate(disc_indices):
+                processed_data[:, idx] = disc_scaled[:, i]
+            logging.debug(f"{self.disc_rescale_type} scaled {len(disc_indices)} discrete features")
         else:
-            disc_x, disc_scaler, disc_names = None, None, []
-
-        logging.debug(f"{self.disc_rescale_type} scaled disc_x: {disc_names}")
-
-        # feature scaling for continious features, if they exist
-        if len(self.cont_sel) > 0:
-            cont_x, cont_scaler, cont_names = self.fit_continuous(data, no_rescale)
+            disc_scaler = None
+        
+        # Fit and transform continuous features as a group (includes both "cont" and "uni")
+        if len(cont_sel) > 0:
+            cont_indices = cont_sel.index.tolist()
+            cont_data = data[:, cont_indices]
+            if no_rescale:
+                cont_scaled = cont_data
+                cont_scaler = [("none", None)]
+            else:
+                cont_scaled, cont_scaler = rescale_continuous_data(cont_data, self.cont_rescale_type)
+            # Place scaled continuous features back in their original positions
+            for i, idx in enumerate(cont_indices):
+                processed_data[:, idx] = cont_scaled[:, i]
+            logging.debug(f"{self.cont_rescale_type} scaled {len(cont_indices)} continuous/uniform features")
         else:
-            cont_x, cont_scaler, cont_names = None, None, []
-
-        logging.debug(f"{self.cont_rescale_type} scaled cont_x: {cont_names}")
-
-        # select other features (e.g. labels)
-        other_x = data[:, other_sel.index]
-        other_names = list(other_sel["feature"].values)
-
-        logging.debug(f"None scaled other_x: {other_names}")
-
-        # concatenate given (preprocessed) features
-        if disc_x is None:
-            data = np.concatenate((cont_x, other_x), axis=1)
-        elif cont_x is None:
-            data = np.concatenate((disc_x, other_x), axis=1)
-        else:
-            data = np.concatenate((disc_x, cont_x, other_x), axis=1)
-
-        # concatenate feature names with correct order and index
-        colnames = disc_names + cont_names + other_names
-
-        # make new selection dataframe
-        new_selection = pd.DataFrame({k: [] for k in selection.columns})
-        for i, colname in enumerate(colnames):
-            new_selection.loc[i] = selection[selection["feature"] == colname].iloc[0].to_dict()
-
+            cont_scaler = None
+        
+        # Copy other features (weights, etc.) unchanged
+        if len(other_sel) > 0:
+            other_indices = other_sel.index.tolist()
+            for idx in other_indices:
+                processed_data[:, idx] = data[:, idx]
+            logging.debug(f"Kept {len(other_indices)} other features unchanged")
+        
         # make scalers dictionary
         scalers = {"disc": disc_scaler, "cont": cont_scaler}
+        self.selection = selection
 
-        self.selection = new_selection
-
-        return data, new_selection, scalers
-
-    def fit_discrete(self, data: np.ndarray, no_rescale=False) -> tuple[np.ndarray, Any, list[str]]:
-        """One hot encode discrete features.
-
-        Returns
-        -------
-        tuple
-            (x, onehot_scaler, all_feature_names)
-            x is 2d array with columns: onehot encoded discrete features
-
-        Example
-        -------
-        disc_feature_names = {'LepM', 'LepQ', 'NJets'}
-
-        np.unique(x_disc[:, 0]), np.unique(x_disc[:, 1]), np.unique(x_disc[:, 2])
-        (array([ 4.,  5.,  6.,  7.,  8.,  9., 10., 11., 12., 13., 14., 15., 16., 17.]), array([0., 1.]), array([-1.,  1.]))
-
-        Transform this into one hot encoding matrix with 0s and 1s.
-
-        References
-        ----------
-        [1] - https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.OneHotEncoder.html
-
-        """
-
-        disc_idx, disc_names = self.disc_sel.index, list(self.disc_sel.values)
-        x_disc = data[:, disc_idx]
-
-        if no_rescale:
-            return x_disc, [("none", None)], disc_names
-
-        x_disc_scaled, scaler = rescale_discrete_data(x_disc, self.disc_rescale_type)
-
-        if self.disc_rescale_type == "onehot":
-            # get onehot feature names
-            onehot_feature_names = []
-            for i, feat in enumerate(disc_names):
-                n_classes = scaler.categories_[i].shape[0]
-                for _ in range(n_classes):
-                    onehot_feature_names.append(feat)
-
-            disc_names = onehot_feature_names
-
-        return x_disc_scaled, scaler, disc_names
-
-    def fit_continuous(self, data: np.ndarray, no_rescale=False) -> tuple[np.ndarray, Any, list[str]]:
-        """Fits rescale type to (continious part of) data.
-
-        Returns
-        -------
-        tuple of 2d array and scaler
-            (x, scaler)
-        """
-        cont_idx, cont_names = self.cont_sel.index, list(self.cont_sel.values)
-        x_cont = data[:, cont_idx]
-
-        if no_rescale:
-            return x_cont, [("none", None)], cont_names
-
-        x_cont_scaled, scaler = rescale_continuous_data(x_cont, self.cont_rescale_type)
-        return x_cont_scaled, scaler, cont_names
-
+        return processed_data, selection, scalers
 
 class SeparateLabelPreprocessor(Preprocessor):
     def __init__(self, cont_rescale_type, disc_rescale_type=None, no_process=None):
@@ -349,7 +298,7 @@ class SeparateLabelPreprocessor(Preprocessor):
         super().__init__(cont_rescale_type, disc_rescale_type, no_process)
 
     def __call__(self, data: np.ndarray, selection: pd.DataFrame, *args, **kwargs):
-        logging.info(f"Preprocessing data using cont. {self.cont_rescale_type} and disc. {self.disc_rescale_type}.")
+        logging.info(f"Preprocessing data using cont. {self.cont_rescale_type} and disc. {self.disc_rescale_type} (preserving feature order, separate by label).")
         return self.label_preprocess(data, selection)
 
     def label_preprocess(self, data: np.ndarray, selection: pd.DataFrame):

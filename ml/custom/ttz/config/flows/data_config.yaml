@@ -1,0 +1,42 @@
+data_config:
+  data_name: ttz
+  input_dim: 29  # 3 leptons * 4 (Pt,Eta,Phi,Charge) + 3 jets * 5 (Pt,Eta,Phi,Mass,BTag) + 2 MET
+  base_distribution: normal
+  train_split: 0.8
+  val_split: 0.5
+  
+  # BSM weighting options
+  load_weights: true   # Load smeft_weights from ROOT file (set to true to enable BSM weighting)
+  use_weights: true    # Use weights during training (applies cHt=5.0 weights to loss)
+
+  input_processing:
+    shuffle: True
+    keep_ratio: 1.0
+    hold_mode: False
+    use_hold: False
+    hold_ratio: 0.5
+
+  feature_selection:
+    n_data: null  #for testing use 100000 & null for all data during actual training 
+    keep_names: ["Electron_Pt","Electron_Eta","Electron_Phi","Electron_E","Electron_Charge",
+                 "Muon_Pt","Muon_Eta","Muon_Phi","Muon_E","Muon_Charge",
+                 "Jet_Pt","Jet_Eta","Jet_Phi","Jet_Mass","Jet_E","Jet_BTag",
+                 "MET","MET_phi"]  # ROOT file branches needed for physics selection
+
+  dataloader_config:
+    batch_size: 2048
+    num_workers: 16 # Use -1 to use all available cores (uses much more RAM)
+    pin_memory: False # Set to True to speed up GPU transfer (uses more CPU RAM only use if enough available) !!Tried True and was slower??
+    drop_last: True
+    persistent_workers: False  # Don't keep workers alive to save memory
+
+  preprocessing:
+    cont_rescale_type: gauss_rank
+    disc_rescale_type: null
+    no_process: ["weight"]  # Only skip weights; Phi angles SHOULD be Gaussian rank scaled
+    
+    # NOTE: Phi angles are scaled Uniform → Gaussian for training, then Gaussian → Uniform when sampling.
+    # This makes it easier for flows to learn (Gaussian base → Gaussian target, nearly identity).
+    # Without scaling, flows must learn Gaussian → Uniform which is much harder.
+    
+    # Feature order is preserved from ROOT files: Jets → Leptons → MET (physics-motivated grouping)

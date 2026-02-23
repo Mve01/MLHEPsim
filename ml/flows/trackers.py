@@ -77,7 +77,7 @@ class FlowTracker(Tracker):
 
         self.density, self.reference = [], []
         for b in tqdm(dl, desc="Looping over test dataloader for metrics and plotting", leave=False):
-            x, _ = b
+            x = b[0]  # Handle both 2-element (x, y) and 3-element (x, y, weights) batches
             self.density.append(
                 self.module.model.estimate_density(x.to(self.module.model.device), exp=False, mean=False)
             )

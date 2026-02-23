@@ -60,7 +60,11 @@ class GaussRankScaler:
             original_shape = X.shape
             X = X.flatten()[:, None]
 
-        if not reverse and append_interp_funcs:
+        # Determine if we're creating new interpolation functions or using existing ones
+        create_new_funcs = (not reverse) and (interp_funcs_lst is None or append_interp_funcs)
+        use_existing_funcs = (not reverse) and (interp_funcs_lst is not None) and (not append_interp_funcs)
+        
+        if create_new_funcs:
             interp_funcs_lst = []
 
         X_transf, dim = np.zeros_like(X), X.shape[1]
@@ -68,18 +72,23 @@ class GaussRankScaler:
         for i in tqdm(range(dim), desc="Scaling with GaussRankScaler", leave=False):
             x = X[:, i]
 
-            if not reverse and self.noise_level is not None:
+            if not reverse and self.noise_level is not None and create_new_funcs:
                 x = x + np.random.normal(0, self.noise_level, len(x))
 
-            if not reverse:
+            if use_existing_funcs:
+                # Use existing interpolation functions (transform mode)
+                interp_func = interp_funcs_lst[i]
+                X_transf[:, i] = interp_func(x)
+            elif not reverse:
+                # Create new interpolation functions (fit_transform mode)
                 scaled_rank = self.get_rank(x)
                 interp_transf_x, interp_func = self.interpolate_erfinv(x, scaled_rank)
-
                 X_transf[:, i] = interp_transf_x
 
                 if append_interp_funcs:
                     interp_funcs_lst.append(interp_func)
             else:
+                # Reverse transform (inverse_transform mode)  
                 interp_func = interp_funcs_lst[i]
                 X_transf[:, i] = self.inverse_interpolate_erf(x, interp_func)
 
@@ -157,7 +166,14 @@ class GaussRankTransform(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X, y=None):
-        raise NotImplementedError
+        """Apply the Gaussian rank transformation using already-fitted interpolation functions."""
+        if self.interp_funcs_lst is None:
+            raise RuntimeError("This GaussRankTransform instance is not fitted yet. Call 'fit_transform' first.")
+        
+        transf_X, _ = self.gauss_rank_scaler(X, reverse=False, 
+                                              interp_funcs_lst=self.interp_funcs_lst, 
+                                              append_interp_funcs=False)
+        return transf_X
 
     def fit_transform(self, X, y=None):
         transf_X, interp_funcs_lst = self.gauss_rank_scaler(X, reverse=False, append_interp_funcs=self.training)

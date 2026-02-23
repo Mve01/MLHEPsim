@@ -1,0 +1,23 @@
+training_config:
+  learning_rate: 5.e-5
+  epochs: 1000
+
+  compile: False
+  
+  # SM weighting in loss calculation
+  use_sm_weights: true  # Apply SM event weights during training (requires load_weights=true in data_config)
+
+  optimizer: Adam
+  early_stop_patience: 10
+  weight_decay: 5.e-5
+
+  scheduler:
+    scheduler_name: ReduceLROnPlateau
+    interval: epoch
+    reduce_lr_on_epoch: null
+    scheduler_params:
+      mode: min
+      factor: 0.5
+      patience: 5
+      min_lr: 1.e-7
+      verbose: true

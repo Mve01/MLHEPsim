@@ -54,6 +54,10 @@ def url_download(url, data_dir, chunk_size=1024):
 def load_dataset_variables(file_dir) -> dict[str, str | list[str]]:
     json_path = file_dir + "variables.json"           
 
-    with open(json_path, "r") as j:
-        contents = json.loads(j.read())
-    return contents
+    try:
+        with open(json_path, "r") as j:
+            contents = json.loads(j.read())
+        return contents
+    except FileNotFoundError:
+        logging.warning(f"variables.json not found in {file_dir}, returning empty dict")
+        return {"colnames": {}}

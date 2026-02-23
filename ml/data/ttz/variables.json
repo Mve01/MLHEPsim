@@ -1,0 +1,33 @@
+{
+    "colnames": {
+        "Jet1_Pt": "cont",
+        "Jet1_Eta": "cont",
+        "Jet1_Phi": "uni",
+        "Jet1_Mass": "cont",
+        "Jet1_BTag": "cont",
+        "Jet2_Pt": "cont",
+        "Jet2_Eta": "cont",
+        "Jet2_Phi": "uni",
+        "Jet2_Mass": "cont",
+        "Jet2_BTag": "cont",
+        "Jet3_Pt": "cont",
+        "Jet3_Eta": "cont",
+        "Jet3_Phi": "uni",
+        "Jet3_Mass": "cont",
+        "Jet3_BTag": "cont",
+        "Lepton1_Pt": "cont",
+        "Lepton1_Eta": "cont",
+        "Lepton1_Phi": "uni",
+        "Lepton1_Charge": "disc",
+        "Lepton2_Pt": "cont",
+        "Lepton2_Eta": "cont",
+        "Lepton2_Phi": "uni",
+        "Lepton2_Charge": "disc",
+        "Lepton3_Pt": "cont",
+        "Lepton3_Eta": "cont",
+        "Lepton3_Phi": "uni",
+        "Lepton3_Charge": "disc",
+        "MET": "cont",
+        "MET_Phi": "uni"
+    }
+}

@@ -1,0 +1,4 @@
+An overview of some saved models that might be nice to use at a later stage:
+
+-   "MAFMADEMOG_flow_model_gauss_rank_20260122_nall"  # SM weights all data run from 22-01-2026
+-   "MAFMADEMOG_flow_model_gauss_rank_20260123_nall"  # cHt=5.0 weights all data run from 23-01-2026

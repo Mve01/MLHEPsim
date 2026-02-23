@@ -42,6 +42,12 @@ def register_from_checkpoint(trainer, base_module, model_name=None, save_module=
 
     experiment_id = logger.experiment_id
     run_id = logger.run_id
+    
+    # Set tracking URI to ensure MLflow uses the correct working directory
+    # Use the logger's save_dir to get the absolute path to mlruns
+    tracking_uri = os.path.abspath(logger.save_dir)
+    mlflow.set_tracking_uri(f"file://{tracking_uri}")
+    logging.info(f"MLflow tracking URI set to: file://{tracking_uri}")
 
     state_dict = torch.load(ckpt_best_model_path)["state_dict"]
     checkpoint_dir = f"mlruns/{experiment_id}/{run_id}"
@@ -57,17 +63,42 @@ def register_from_checkpoint(trainer, base_module, model_name=None, save_module=
     base_module.tracker = None
 
     logging.info(f"Registering model {model_name}.")
+    
+    # Determine what to save
+    if save_module:
+        obj_to_save = base_module
+        logging.info(f"Saving Lightning module: {type(obj_to_save)}")
+    else:
+        obj_to_save = base_module.model  
+        logging.info(f"Saving inner model only: {type(obj_to_save)}")
+    
+    # Verify the object has required methods
+    if save_module and not hasattr(obj_to_save, 'sample'):
+        logging.warning(f"WARNING: Lightning module {type(obj_to_save)} does not have sample() method!")
+        logging.warning(f"Inner model type: {type(base_module.model)}")
 
-    mlflow.pytorch.log_model(
-        base_module if save_module else base_module.model,
-        artifact_path=f"{checkpoint_dir}/artifacts",
-        signature=None,
-        registered_model_name=model_name,
-    )
-
-    logging.info(f"Removing model in checkpoint directory {checkpoint_dir}/.")
-    os.system(f"rm -rf {checkpoint_dir}/artifacts/model")
-    os.system(f"rm -rf {checkpoint_dir}/checkpoints")
+    try:
+        mlflow.pytorch.log_model(
+            obj_to_save,
+            artifact_path="model",  # Fixed: use relative path, not nested checkpoint_dir
+            signature=None,
+            registered_model_name=model_name,
+        )
+        
+        # Verify the model was actually saved before cleaning up checkpoints
+        artifacts_model_dir = f"{checkpoint_dir}/artifacts/model"
+        if os.path.exists(artifacts_model_dir) and len(os.listdir(artifacts_model_dir)) > 0:
+            logging.info(f"Model successfully registered to {artifacts_model_dir}.")
+            logging.info(f"Checkpoint preserved at: {ckpt_best_model_path}")
+            # Keep checkpoint for now - can be cleaned up manually later if needed
+            # os.system(f"rm -rf {checkpoint_dir}/checkpoints")
+        else:
+            logging.error(f"MLflow registration failed - artifacts directory is empty or missing!")
+            logging.error(f"Checkpoint preserved at: {ckpt_best_model_path}")
+    except Exception as e:
+        logging.error(f"Failed to register model {model_name}: {e}")
+        logging.error(f"Checkpoint preserved at: {ckpt_best_model_path}")
+        raise
 
     return {model_name: base_module}
 

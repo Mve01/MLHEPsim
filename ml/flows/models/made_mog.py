@@ -1,6 +1,8 @@
+import logging
 import numpy as np
 import torch
 import torch.distributions as D
+from tqdm import tqdm
 
 from ml.flows.models.base_flows import (
     AutoregressiveNormalizingFlow,
@@ -147,10 +149,14 @@ class MOGFlowModel(FlowModel):
         super().__init__(model_conf, training_conf, data_conf, model, loss_func, tracker)
         self.data_conf = data_conf
         self.use_loss_weighting = training_conf.get('use_loss_weighting', False)
+        self.use_sm_weights = training_conf.get('use_sm_weights', False)
         self.boundary_margin = training_conf.get('boundary_margin', 5.0)  # GeV margin to downweight
     
     def _compute_mass_weights(self, x):
         """Compute sample weights based on distance from mass boundaries.
+        
+        Only applies weighting for Drell-Yan data. For other datasets (e.g., ttZ),
+        returns uniform weights.
         
         Weighting scheme (for sidebands with mass cut at 122-128 GeV):
         - Outside valid mass ranges: weight = 0
@@ -160,7 +166,9 @@ class MOGFlowModel(FlowModel):
           * Remaining region to upper boundary: weight = 1.0 (full weight)
         - Upper sideband: weight = 1.0 throughout (128-180 GeV)
         """
-        if not self.use_loss_weighting:
+        # Check if this is Drell-Yan data - only apply mass weighting for Drell-Yan
+        data_name = self.data_conf.get('data_name', '')
+        if data_name != 'DrellYan' or not self.use_loss_weighting:
             return torch.ones(x.shape[0], 1, device=x.device)
         
         # Extract mass configuration
@@ -255,7 +263,13 @@ class MOGFlowModel(FlowModel):
         return weights.unsqueeze(1)  # (N, 1)
 
     def training_step(self, batch, batch_idx):
-        x, _ = batch
+        # Unpack batch - can be (x, _) or (x, _, sm_weights)
+        if len(batch) == 3:
+            x, _, sm_weights = batch
+            sm_weights = sm_weights.unsqueeze(1)  # (N, 1)
+        else:
+            x, _ = batch
+            sm_weights = None
 
         _, log_jac = self.model(x)  # _: (N, L), log_jac: list of [(N, 1),...,(N, C, L)]
 
@@ -268,22 +282,38 @@ class MOGFlowModel(FlowModel):
         # Compute sample losses
         sample_losses = -(sum_of_log_det_jacobian + mog_nll)  # (N, 1)
         
-        # Compute sample weights based on mass
-        weights = self._compute_mass_weights(x)  # (N, 1)  
-
-        # Weighted loss: focus on core data regions
+        # Compute sample weights
+        weights = torch.ones_like(sample_losses)  # Start with uniform weights
+        
+        # Apply mass-based weighting if enabled (for Drell-Yan)
+        if self.use_loss_weighting:
+            mass_weights = self._compute_mass_weights(x)  # (N, 1)
+            weights = weights * mass_weights
+        
+        # Apply SM event weights if available
+        if sm_weights is not None and self.use_sm_weights:
+            weights = weights * sm_weights
+        
+        # Weighted loss: focus on core data regions and/or weight by SM cross-section
         weighted_losses = weights * sample_losses
         loss = torch.mean(weighted_losses)
 
         self.log("train_loss", loss)
         if self.use_loss_weighting:
-            self.log("mean_weight", torch.mean(weights))
+            self.log("mean_mass_weight", torch.mean(mass_weights))
+        if sm_weights is not None and self.use_sm_weights:
+            self.log("mean_sm_weight", torch.mean(sm_weights))
+            self.log("mean_combined_weight", torch.mean(weights))
         self.current_step += 1
 
         return {"loss": loss}
 
     def validation_step(self, batch, batch_idx):
-        x, _ = batch
+        # Unpack batch - can be (x, _) or (x, _, sm_weights)
+        if len(batch) == 3:
+            x, _, sm_weights = batch
+        else:
+            x, _ = batch
 
         _, log_jac = self.model(x)
 
@@ -313,3 +343,37 @@ class MOGFlowModel(FlowModel):
             self.log("val_nll", torch.mean(mog_nll))
 
             return {"val_loss": loss, "val_nll": mog_nll}
+
+    def sample(self, N, chunks=10):
+        """Generate samples from the trained flow model.
+        
+        This method implements sampling for MOG-based normalizing flows.
+        It generates samples in chunks to avoid memory issues with large N.
+        
+        Parameters
+        ----------
+        N : int
+            Total number of samples to generate
+        chunks : int
+            Number of chunks to split generation into (default: 10)
+            
+        Returns
+        -------
+        np.ndarray
+            Generated samples of shape (N, input_dim)
+        """
+        if self.model.training:
+            raise ValueError("Model must be in eval mode for sampling!")
+
+        # Ensure the entire model is on the correct device
+        import torch
+        device = next(self.parameters()).device
+        self.model = self.model.to(device)
+        # Update device attributes - MAFMADEMOG has nested .model attribute
+        if hasattr(self.model, 'device'):
+            self.model.device = torch.device(device)
+        if hasattr(self.model, 'model') and hasattr(self.model.model, 'device'):
+            self.model.model.device = torch.device(device)
+
+        # Call the base model's sample method which already returns numpy
+        return self.model.sample(N, chunks=chunks)
