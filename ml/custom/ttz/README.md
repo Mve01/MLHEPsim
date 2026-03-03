@@ -5,9 +5,16 @@ This directory contains scripts for training normalizing flow models on ttZ phys
 ## Overview
 
 Main training script:
-- **`main_flows.py`** - Model with 12 features (Electron_Pt, Electron_Eta, Electron_Phi, Electron_Mass, Muon_Pt, Muon_Eta, Muon_Phi, Muon_Mass, Jet_Pt, Jet_Eta, Jet_Phi, Jet_Mass)
+- **`main_flows.py`** - Model with 19 features (1 b-jet × 5 + 3 leptons × 4 + MET × 2)
 
-This script trains generative flow models on ttZ data and supports multiple flow architectures with comprehensive tracking, logging, and model checkpointing.
+This script trains generative flow models on ttZ data (trilepton channel) and supports multiple flow architectures with comprehensive tracking, logging, and model checkpointing.
+
+**Feature Layout (19 features)**:
+- **Jet1** (5): Pt, Eta, Phi, Mass, BTag (highest BTag score jet, likely b-jet)
+- **Lepton1** (4): Pt, Eta, Phi, Charge (Z lepton, higher pT)
+- **Lepton2** (4): Pt, Eta, Phi, Charge (Z lepton, lower pT)
+- **Lepton3** (4): Pt, Eta, Phi, Charge (W lepton)
+- **MET** (2): MET, MET_Phi
 
 ## Supported Flow Models
 
@@ -24,32 +31,26 @@ The script supports the following normalizing flow architectures:
 
 ## Usage
 
-### Full Model (6 Features)
+### Training ttZ Model (19 Features)
 
-Train with all kinematic features including both muon transverse momenta:
+Train the model on ttZ trilepton events:
 
 ```bash
 python ml/custom/ttz/main_flows.py
 ```
 
-Uses `variables.json` with features:
-- `Muons_PT_Lead`, `Muons_PT_Sub`
-- `Muons_Eta_Lead`, `Muons_Eta_Sub`
-- `Muons_Phi_Lead`, `Muons_Phi_Sub`
+Uses `variables.json` located at `ml/data/ttz/variables.json` with 19 features:
 
-### Reduced Model (6 Features)
+**Jets** (1 jet × 5 features):
+- `Jet1_Pt`, `Jet1_Eta`, `Jet1_Phi`, `Jet1_Mass`, `Jet1_BTag`
 
-Train with invariant mass instead of subleading PT (ablation study):
+**Leptons** (3 leptons × 4 features):
+- `Lepton1_Pt`, `Lepton1_Eta`, `Lepton1_Phi`, `Lepton1_Charge`
+- `Lepton2_Pt`, `Lepton2_Eta`, `Lepton2_Phi`, `Lepton2_Charge`
+- `Lepton3_Pt`, `Lepton3_Eta`, `Lepton3_Phi`, `Lepton3_Charge`
 
-```bash
-python ml/custom/ttz/main_flows_reduced.py
-```
-
-Uses `variables_reduced.json` with features:
-- `Muons_Pos_PT` (only leading PT)
-- `Muons_Pos_Eta`, `Muons_Neg_Eta`
-- `Muons_Pos_Phi`, `Muons_Neg_Phi`
-- `Muons_Minv_MuMu` (invariant mass)
+**MET** (2 features):
+- `MET`, `MET_Phi`
 
 The reduced model tests whether the flow can learn to predict the missing PT from the mass and angular separations.
 

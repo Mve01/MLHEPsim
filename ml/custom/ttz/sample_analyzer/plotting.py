@@ -118,9 +118,9 @@ def _create_feature_comparison_plot(real_data, generated_data, selected_features
         bin_centers = (bins_edges[:-1] + bins_edges[1:]) / 2
         
         # Main plot
-        label_real = 'SM MC data (weighted)' if real_weights is not None else 'SM MC data'
+        label_real = 'MC data (weighted cHt=5.0)' if real_weights is not None else 'SM MC data'
         ax_main.step(bin_centers, hist_real, color='blue', label=label_real, where='mid', lw=2)
-        ax_main.step(bin_centers, hist_gen, color='red', label='SM Generated', where='mid', lw=2)
+        ax_main.step(bin_centers, hist_gen, color='red', label='cHt=5.0 Generated', where='mid', lw=2)
         
         # Formatting main plot
         if use_log_scale:

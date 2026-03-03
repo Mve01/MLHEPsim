@@ -30,7 +30,7 @@ class ttzDataModule(DataModule):
         
         # Extract weights from last column if requested
         if self.use_weights:
-            if data.shape[1] == 30:  # 29 features + 1 weight column
+            if data.shape[1] == 16:  # 15 features + 1 weight column (cylindrical coordinates, no charges)
                 self.weights = data[:, -1]  # Last column is the weight
                 data = data[:, :-1]  # Remove weight column from features
                 # Remove cHt_weight from selection since it's no longer in data
@@ -42,7 +42,7 @@ class ttzDataModule(DataModule):
                 logging.info(f"Extracted cHt=5.0 weights from data. Features shape: {data.shape}, Weights shape: {self.weights.shape}")
                 logging.info(f"Normalized cHt weights: original mean={weight_mean:.6e}, new mean={np.mean(self.weights):.6f}, min={np.min(self.weights):.6f}, max={np.max(self.weights):.6f}")
             else:
-                logging.warning(f"use_weights=True but data shape is {data.shape}, expected 30 columns (29 features + 1 weight). Training without weights.")
+                logging.warning(f"use_weights=True but data shape is {data.shape}, expected 16 columns (15 features + 1 weight). Training without weights.")
                 self.use_weights = False
 
         self._get_splits(len(data))

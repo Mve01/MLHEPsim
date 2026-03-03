@@ -4,7 +4,7 @@ This directory contains minimal tools for analyzing ttZ samples from generative 
 
 ## Overview
 
-This is a simplified analyzer for ttZ data (3 leptons + 3 jets = 24 features). It focuses on:
+This is a simplified analyzer for ttZ data (3 leptons + 1 jet + MET = 19 features). It focuses on:
 - Loading trained models and generating samples
 - Comparing feature distributions between real and generated data
 - Basic correlation plots

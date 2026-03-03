@@ -55,22 +55,10 @@ class ttzSampleAnalyzer:
         full_data = np.load(original_data_path)
         logging.info(f"Loaded full original ttZ data shape: {full_data.shape}")
         
-        # Extract ONLY test set using EXACT same split as training
-        # CRITICAL: Must use same random_state as training to get identical test set!
-        # Training uses L.seed_everything(0) which sets numpy seed to 0
-        from sklearn.model_selection import train_test_split
-        n_total = len(full_data)
-        idx = np.arange(n_total)
-        train_split = 0.8
-        val_split = 0.5
-        
-        # Use random_state=0 to match training seed
-        remaining, train_idx = train_test_split(idx, test_size=train_split, random_state=0)
-        test_idx, val_idx = train_test_split(remaining, test_size=val_split, random_state=0)
-        
-        self.original_data = full_data[test_idx]
-        logging.info(f"Using TEST SET ONLY for comparison: {self.original_data.shape}")
-        logging.info(f"  Train: {len(train_idx)} | Val: {len(val_idx)} | Test: {len(test_idx)} samples")
+        # Use FULL dataset for comparison (training + validation + test)
+        # Note: This provides more statistics for comparison plots than test set alone
+        self.original_data = full_data
+        logging.info(f"Using FULL DATASET for comparison: {self.original_data.shape}")
         
         # Also load preprocessed data (for reference)
         if not os.path.exists(data_dir):
@@ -93,9 +81,9 @@ class ttzSampleAnalyzer:
             data_config = yaml.safe_load(f)
         preprocessing_config = data_config['data_config']['preprocessing']
         
-        # Get feature names
+        # Get feature names (now only 'cont' and 'disc' types with Cartesian coordinates)
         features = [name for name, type_ in self.variables['colnames'].items() 
-                   if type_ in ['cont', 'uni']]
+                   if type_ in ['cont', 'uni', 'disc']]  # Include all feature types
         
         # Initialize processor and selector
         npy_proc = ttzNpyProcessor(
@@ -170,13 +158,28 @@ class ttzSampleAnalyzer:
         self.selected_features = self.selection['feature'].tolist()
         
         # Extract weight column if present
-        if self.original_data.shape[1] == 30:
+        logging.info(f"Checking for weights in data: shape = {self.original_data.shape}")
+        print(f"\n=== Weight Extraction Debug ===")
+        print(f"Original data shape: {self.original_data.shape}")
+        if self.original_data.shape[1] == 16:  # 15 features (cylindrical coords, no charges) + 1 weight
             self.original_weights = self.original_data[:, -1]  # Last column is weight
             self.original_data = self.original_data[:, :-1]  # Remove weight from features
+            print(f"✓ Extracted cHt=5.0 weights from data")
+            print(f"  Weights: min={np.min(self.original_weights):.6e}, max={np.max(self.original_weights):.6e}, mean={np.mean(self.original_weights):.6e}")
+            print(f"  Data after extraction: {self.original_data.shape}, Weights: {self.original_weights.shape}")
+            logging.info(f"✓ Extracted cHt=5.0 weights from data: min={np.min(self.original_weights):.6e}, "
+                        f"max={np.max(self.original_weights):.6e}, mean={np.mean(self.original_weights):.6e}")
+            logging.info(f"  After weight extraction: data shape = {self.original_data.shape}, weights shape = {self.original_weights.shape}")
         else:
             self.original_weights = None
+            print(f"✗ WARNING: No weights found!")
+            print(f"  Expected 16 columns (15 cylindrical features + 1 weight), got {self.original_data.shape[1]}")
+            print(f"  MC histograms will be UNWEIGHTED!")
+            logging.warning(f"✗ No weights found in data! Expected 16 columns (15 cylindrical features + 1 weight), got {self.original_data.shape[1]}")
+            logging.warning("  MC histograms will be UNWEIGHTED - this is incorrect for cHt=5.0 comparison!")
+        print("="*40 + "\n")
         
-        # Note: Data is now created in physics-motivated order (Jets → Leptons → MET) directly
+        # Note: Data is now created in physics-motivated order (1 Jet → 3 Leptons → MET) directly
         # from ROOT files, so no reordering is needed. Old .npy files may need to be regenerated.
         
     def generate_samples(self, n_samples=100000, chunks=10, debug=False):
@@ -232,19 +235,7 @@ class ttzSampleAnalyzer:
         logging.info(f"Applying inverse transform: data shape = {generated_data.shape}")
         self.generated_data = self.rescale_handler.inverse_transform(generated_data)
         
-        # Post-process charge features: snap to -1 or +1
-        for i, feature in enumerate(self.selected_features):
-            if 'Charge' in feature:
-                if not np.isnan(self.generated_data[:, i]).all():
-                    # Snap to -1 or +1 using sign function
-                    self.generated_data[:, i] = np.sign(self.generated_data[:, i])
-                    # Handle any zeros (unlikely but possible) - assign randomly
-                    zero_mask = self.generated_data[:, i] == 0
-                    if zero_mask.any():
-                        self.generated_data[zero_mask, i] = np.random.choice([-1, 1], size=zero_mask.sum())
-        
         if debug:
-            print("\n=== After charge post-processing ===")
             for i, feature in enumerate(self.selected_features):
                 col_data = self.generated_data[:, i]
                 print(f"{feature}: min={col_data.min():.3f}, "

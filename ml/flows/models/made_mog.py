@@ -312,8 +312,10 @@ class MOGFlowModel(FlowModel):
         # Unpack batch - can be (x, _) or (x, _, sm_weights)
         if len(batch) == 3:
             x, _, sm_weights = batch
+            sm_weights = sm_weights.unsqueeze(1)  # (N, 1)
         else:
             x, _ = batch
+            sm_weights = None
 
         _, log_jac = self.model(x)
 
@@ -328,8 +330,28 @@ class MOGFlowModel(FlowModel):
             mask = torch.logical_and(mask_nll, mask_jac)
 
             sum_of_log_det_jacobian, mog_nll = sum_of_log_det_jacobian[mask], mog_nll[mask]
-
-            loss = -torch.mean(sum_of_log_det_jacobian + mog_nll)
+            
+            # Compute sample losses
+            sample_losses = -(sum_of_log_det_jacobian + mog_nll)  # (N, 1)
+            
+            # Apply weights consistently with training
+            weights = torch.ones_like(sample_losses)  # Start with uniform weights
+            
+            # Apply mass-based weighting if enabled (for Drell-Yan)
+            if self.use_loss_weighting:
+                # Need to apply mask to x as well for mass computation
+                x_masked = x[mask.squeeze()]
+                mass_weights = self._compute_mass_weights(x_masked)  # (N, 1)
+                weights = weights * mass_weights
+            
+            # Apply SM event weights if available
+            if sm_weights is not None and self.use_sm_weights:
+                sm_weights_masked = sm_weights[mask]
+                weights = weights * sm_weights_masked
+            
+            # Weighted loss: consistent with training objective
+            weighted_losses = weights * sample_losses
+            loss = torch.mean(weighted_losses)
 
             self.log("val_loss", loss)
             self.log("sum_log_det_jac", torch.mean(sum_of_log_det_jacobian))
@@ -337,7 +359,24 @@ class MOGFlowModel(FlowModel):
 
             return {"val_loss": loss, "sum_log_det_jac": sum_of_log_det_jacobian, "val_nll": mog_nll}
         else:
-            loss = -torch.mean(mog_nll)
+            # Compute sample losses
+            sample_losses = -mog_nll  # (N, 1)
+            
+            # Apply weights consistently with training
+            weights = torch.ones_like(sample_losses)
+            
+            # Apply mass-based weighting if enabled
+            if self.use_loss_weighting:
+                mass_weights = self._compute_mass_weights(x)
+                weights = weights * mass_weights
+            
+            # Apply SM event weights if available
+            if sm_weights is not None and self.use_sm_weights:
+                weights = weights * sm_weights
+            
+            # Weighted loss
+            weighted_losses = weights * sample_losses
+            loss = torch.mean(weighted_losses)
 
             self.log("val_loss", loss)
             self.log("val_nll", torch.mean(mog_nll))

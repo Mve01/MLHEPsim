@@ -285,6 +285,12 @@ class Preprocessor:
             for idx in other_indices:
                 processed_data[:, idx] = data[:, idx]
             logging.debug(f"Kept {len(other_indices)} other features unchanged")
+            
+            # Mark skipped features as "other" type so RescalingHandler knows not to scale them
+            for idx in other_indices:
+                original_type = selection.loc[idx, "type"]
+                selection.loc[idx, "type"] = "other"
+            logging.debug(f"Updated selection: marked {len(other_indices)} no_process features as 'other' type")
         
         # make scalers dictionary
         scalers = {"disc": disc_scaler, "cont": cont_scaler}

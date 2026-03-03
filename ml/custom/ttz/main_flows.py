@@ -118,6 +118,7 @@ def main(config):
         base_file_name="ttz", 
         list_data_features=data_conf["feature_selection"]["keep_names"],
         load_weights=data_conf.get("load_weights", False),  # Enable weight loading if specified
+        weight_type=data_conf.get("weight_type", "full"),  # SMEFT weight type: full/sm/linear/quadratic
         **data_conf["input_processing"]
     ) 
 

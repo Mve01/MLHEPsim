@@ -1,13 +1,21 @@
 data_config:
   data_name: ttz
-  input_dim: 29  # 3 leptons * 4 (Pt,Eta,Phi,Charge) + 3 jets * 5 (Pt,Eta,Phi,Mass,BTag) + 2 MET
+  input_dim: 15  # Z_Lepton1 (Pt,Eta,Phi=3) + Z_Lepton2(3) + W_Lepton(3) + BJet(Pt,Eta,Phi,Mass=4) + MET(MET,MET_Phi=2)
   base_distribution: normal
   train_split: 0.8
   val_split: 0.5
   
   # BSM weighting options
   load_weights: true   # Load smeft_weights from ROOT file (set to true to enable BSM weighting)
-  use_weights: true    # Use weights during training (applies cHt=5.0 weights to loss)
+  use_weights: true    # Use weights during training
+  
+  # SMEFT weight decomposition: w_eft = w_sm + c*w_lin + c^2*w_quad (with c=5.0)
+  # weight_type options:
+  #   "full"      - Use full SMEFT weight at cHt=5.0 (smeft_weights[:, 124])
+  #   "sm"        - Use SM weight only (w_sm from eventWeight)
+  #   "linear"    - Use linear term only: w_lin = (w_plus - w_minus) / 10.0
+  #   "quadratic" - Use quadratic term only: w_quad = (w_plus + w_minus - 2*w_sm) / 50.0
+  weight_type: "linear"           # Which weight component to use for training
 
   input_processing:
     shuffle: True
@@ -18,10 +26,11 @@ data_config:
 
   feature_selection:
     n_data: null  #for testing use 100000 & null for all data during actual training 
-    keep_names: ["Electron_Pt","Electron_Eta","Electron_Phi","Electron_E","Electron_Charge",
-                 "Muon_Pt","Muon_Eta","Muon_Phi","Muon_E","Muon_Charge",
-                 "Jet_Pt","Jet_Eta","Jet_Phi","Jet_Mass","Jet_E","Jet_BTag",
-                 "MET","MET_phi"]  # ROOT file branches needed for physics selection
+    keep_names: ["Z_Lepton1_Pt","Z_Lepton1_Eta","Z_Lepton1_Phi",
+                 "Z_Lepton2_Pt","Z_Lepton2_Eta","Z_Lepton2_Phi",
+                 "W_Lepton_Pt","W_Lepton_Eta","W_Lepton_Phi",
+                 "BJet_Pt","BJet_Eta","BJet_Phi","BJet_Mass",
+                 "MET","MET_Phi"]  # Charge features removed: trivially ±1 and unused in physics calculations
 
   dataloader_config:
     batch_size: 2048
@@ -33,10 +42,10 @@ data_config:
   preprocessing:
     cont_rescale_type: gauss_rank
     disc_rescale_type: null
-    no_process: ["weight"]  # Only skip weights; Phi angles SHOULD be Gaussian rank scaled
+    no_process: ["weight"]  # Skip weights only; Phi angles (type 'uni') are Gaussian rank scaled
     
-    # NOTE: Phi angles are scaled Uniform → Gaussian for training, then Gaussian → Uniform when sampling.
-    # This makes it easier for flows to learn (Gaussian base → Gaussian target, nearly identity).
-    # Without scaling, flows must learn Gaussian → Uniform which is much harder.
+    # NOTE: Using cylindrical coordinates (Pt, Eta, Phi) converted from ROOT Cartesian branches
+    # Phi angles are type 'uni' in variables.json and are Gaussian rank scaled (Uniform -> Gaussian)
+    # so the flow (Gaussian base) can learn them easily, then inverse-scaled back at generation time
     
-    # Feature order is preserved from ROOT files: Jets → Leptons → MET (physics-motivated grouping)
+    # Feature order: Z_Lepton1 → Z_Lepton2 → W_Lepton → BJet → MET (physics-motivated grouping)

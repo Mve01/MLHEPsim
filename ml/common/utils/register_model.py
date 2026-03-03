@@ -77,24 +77,47 @@ def register_from_checkpoint(trainer, base_module, model_name=None, save_module=
         logging.warning(f"WARNING: Lightning module {type(obj_to_save)} does not have sample() method!")
         logging.warning(f"Inner model type: {type(base_module.model)}")
 
+
     try:
-        mlflow.pytorch.log_model(
-            obj_to_save,
-            artifact_path="model",  # Fixed: use relative path, not nested checkpoint_dir
-            signature=None,
-            registered_model_name=model_name,
-        )
-        
-        # Verify the model was actually saved before cleaning up checkpoints
+        # Save FULL model object directly to artifacts directory
         artifacts_model_dir = f"{checkpoint_dir}/artifacts/model"
-        if os.path.exists(artifacts_model_dir) and len(os.listdir(artifacts_model_dir)) > 0:
-            logging.info(f"Model successfully registered to {artifacts_model_dir}.")
-            logging.info(f"Checkpoint preserved at: {ckpt_best_model_path}")
-            # Keep checkpoint for now - can be cleaned up manually later if needed
-            # os.system(f"rm -rf {checkpoint_dir}/checkpoints")
+        model_data_dir = f"{artifacts_model_dir}/data"
+        os.makedirs(model_data_dir, exist_ok=True)
+
+        # Save full PyTorch Lightning module (not just state_dict)
+        model_file = os.path.join(model_data_dir, "model.pth")
+        torch.save(obj_to_save, model_file)  # ← Full object, not .state_dict()
+        logging.info(f"Saved full model to: {model_file}")
+
+        # Create MLmodel file
+        mlmodel_content = f"""artifact_path: model
+flavors:
+  pytorch:
+    code: null
+    model_data: data/model.pth
+    pytorch_version: {torch.__version__}
+mlflow_version: 2.3.0
+model_uuid: {run_id}
+run_id: {run_id}
+"""
+        mlmodel_file = os.path.join(artifacts_model_dir, "MLmodel")
+        with open(mlmodel_file, "w") as f:
+            f.write(mlmodel_content)
+
+        # Register model
+        model_uri = f"file://{os.path.abspath(artifacts_model_dir)}"
+        result = mlflow.register_model(model_uri, model_name)
+        logging.info(f"Registered model '{model_name}' version {result.version}")
+
+        # Verify
+        if os.path.exists(model_file) and os.path.getsize(model_file) > 0:
+            logging.info(f"✓ Model successfully registered as {model_name}")
+            logging.info(f"✓ Artifacts saved to: {artifacts_model_dir}")
+            logging.info(f"✓ Checkpoint preserved at: {ckpt_best_model_path}")
         else:
-            logging.error(f"MLflow registration failed - artifacts directory is empty or missing!")
+            logging.error(f"MLflow registration failed - model file is empty or missing!")
             logging.error(f"Checkpoint preserved at: {ckpt_best_model_path}")
+
     except Exception as e:
         logging.error(f"Failed to register model {model_name}: {e}")
         logging.error(f"Checkpoint preserved at: {ckpt_best_model_path}")

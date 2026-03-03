@@ -4,6 +4,9 @@
 *.csv.gz
 *.pth
 
+# Generated figures
+*.png
+
 
 
 # Byte-compiled / optimized / DLL files

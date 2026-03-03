@@ -22,7 +22,8 @@ class ttzNpyProcessor(NpyProcessor):
         use_hold=False,
         hold_ratio=0.2,
         cut=None,
-        load_weights=False
+        load_weights=False,
+        weight_type="full"
     ):
         """ttz dataset to .npy starting processor.
 
@@ -50,31 +51,34 @@ class ttzNpyProcessor(NpyProcessor):
         self.shuffle = shuffle
         self.hold_mode, self.use_hold, self.hold_ratio = hold_mode, use_hold, 1 - hold_ratio
         self.load_weights = load_weights
+        self.weight_type = weight_type
         self.list_data_features = list_data_features
         
-        # Define features for processed data - must match the order in create_dataset() line 340
-        # Physics-motivated order: Jets (3×5=15) → Leptons (3×4=12) → MET (2) = 29 features total
-        # This groups correlated variables together for better autoregressive flow learning
+        # Define features for processed data - must match the order in create_dataset()
+        # Using cylindrical coordinates (Pt, Eta, Phi) - physics-motivated representation
+        # Physics-motivated order: Z leptons (2×3=6) → W lepton (1×3=3) → BJet (1×4=4) → MET (2) = 15 features total
+        # Charge features removed: not used in any physics calculation and trivially ±1
         processed_features = []
-        # Jets first - group all properties per jet (strongly correlated)
-        for i in range(1, 4):
-            for var in ['Pt', 'Eta', 'Phi', 'Mass', 'BTag']:
-                processed_features.append(f'Jet{i}_{var}')
-        # Leptons second - group all properties per lepton (strongly correlated)
-        for i in range(1, 4):
-            for var in ['Pt', 'Eta', 'Phi', 'Charge']:
-                processed_features.append(f'Lepton{i}_{var}')
+        # Z leptons first - from Z boson decay
+        for i in [1, 2]:
+            for var in ['Pt', 'Eta', 'Phi']:
+                processed_features.append(f'Z_Lepton{i}_{var}')
+        # W lepton second - from W boson decay
+        for var in ['Pt', 'Eta', 'Phi']:
+            processed_features.append(f'W_Lepton_{var}')
+        # BJet third - from top quark decay
+        for var in ['Pt', 'Eta', 'Phi', 'Mass']:
+            processed_features.append(f'BJet_{var}')
         # MET last - global event properties
         processed_features.extend(['MET', 'MET_Phi'])
         
-        # Create features dict with 29 physics features
-        # Mark Phi angles as "uni" (uniform/periodic) - they should NOT be Gaussian rank scaled
+        # Create features dict with 15 physics features
+        # Phi angles are type 'uni' (uniform in [-pi, pi]) - Gaussian rank scaled for training
+        # Pt/Eta/Mass/MET are continuous
         self.features = {"colnames": {}}
         for feature in processed_features:
             if 'Phi' in feature:
                 self.features["colnames"][feature] = "uni"
-            elif 'Charge' in feature:
-                self.features["colnames"][feature] = "disc"
             else:
                 self.features["colnames"][feature] = "cont"
         
@@ -161,30 +165,33 @@ class ttzNpyProcessor(NpyProcessor):
 
 
     def create_dataset(self, list_data_features):
-        """Creates ttz dataset from ROOT files with physics-based particle selection.
+        """Creates ttz dataset from ROOT files with pre-identified physics objects.
         
-        Selection follows ttZ event topology:
-        - 2 leptons from Z decay (OSSF pair closest to mZ)
-        - 1 lepton from W decay (remaining lepton)
-        - 1 b-jet (highest BTag score)
-        - 2 light jets (forward jet + radiative jet)
-        - MET (from neutrino)
+        The input file already has physics objects identified:
+        - 2 leptons from Z decay (Z_Lepton1, Z_Lepton2)
+        - 1 lepton from W decay (W_Lepton)
+        - 1 b-jet (BJet)
+        - MET (missing transverse energy)
+        
+        No event selection is performed - all events in the file are used.
         """
 
-        logging.info("Loading ttz dataset from ROOT files with physics selection!")
+        logging.info("Loading ttz dataset from ROOT files with pre-identified physics objects!")
 
-        # File path - new ATLAS processed file
-        file_path_1 = "/project/atlas/users/kdevries/EventLoop/ATLASSMEFT_ttZ_tree.root"
+        # File path - new ATLAS processed file with physics objects already identified
+        file_path_1 = "/project/atlas/users/kdevries/EventLoop/full_SR_ttZ_tree.root"
 
-        # Required branches for physics selection
+        # Required branches - load cylindrical coordinates directly from ROOT file
         branches_to_load = [
-            'Electron_Pt', 'Electron_Eta', 'Electron_Phi', 'Electron_E', 'Electron_Charge',
-            'Muon_Pt', 'Muon_Eta', 'Muon_Phi', 'Muon_E', 'Muon_Charge',
-            'Jet_Pt', 'Jet_Eta', 'Jet_Phi', 'Jet_Mass', 'Jet_E', 'Jet_BTag',
+            'Z_Lepton1_Pt', 'Z_Lepton1_Eta', 'Z_Lepton1_Phi',
+            'Z_Lepton2_Pt', 'Z_Lepton2_Eta', 'Z_Lepton2_Phi',
+            'W_Lepton_Pt', 'W_Lepton_Eta', 'W_Lepton_Phi',
+            'BJet_Pt', 'BJet_Eta', 'BJet_Phi', 'BJet_Mass',
             'MET', 'MET_phi'
         ]
         if self.load_weights:
-            branches_to_load.append('smeft_weights')
+            # For SMEFT weight decomposition, we need eventWeight and smeft_weights
+            branches_to_load.extend(['eventWeight', 'smeft_weights'])
 
         # Load and concatenate data from all files
         all_filtered_data = []
@@ -193,207 +200,86 @@ class ttzNpyProcessor(NpyProcessor):
             with uproot.open(file_path) as file_ttz:
                 tree_ttz = file_ttz["Events"]
                 data = tree_ttz.arrays(branches_to_load, library="np")
-    
+
             n_events = len(data['MET'])
             logging.info(f"Processing {n_events} events from {file_path}")
-            
-            # Prepare output array: 23 features + optional weight column
-            event_data = []
-            n_valid = 0
-            n_wrong_lepton_count = 0
-            n_no_ossf = 0
-            n_no_jets = 0
-            
-            for i in range(n_events):
-                # === STEP 1: Build lepton list with charge and flavor ===
-                leptons = []
+
+            # Build output array with vectorized numpy stacking (no Python for loop).
+            # This avoids the enormous per-element Python object overhead of a list-of-lists
+            # approach (~24 bytes/float vs 4 bytes for float32), saving several GB of RAM.
+            # Order: Z_Lepton1 (3) → Z_Lepton2 (3) → W_Lepton (3) → BJet (4) → MET (2) = 15 features
+            columns = [
+                data['Z_Lepton1_Pt'],  data['Z_Lepton1_Eta'], data['Z_Lepton1_Phi'],
+                data['Z_Lepton2_Pt'],  data['Z_Lepton2_Eta'], data['Z_Lepton2_Phi'],
+                data['W_Lepton_Pt'],   data['W_Lepton_Eta'],  data['W_Lepton_Phi'],
+                data['BJet_Pt'],       data['BJet_Eta'],       data['BJet_Phi'],      data['BJet_Mass'],
+                data['MET'],           data['MET_phi'],
+            ]
+            if self.load_weights:
+                # Compute appropriate SMEFT weight based on weight_type
+                # Weight indices for ttz (from ml/data/ttz/cHt_weight_indices.txt):
+                #   122: cHt_m5p0 (cHt = -5.0)
+                #   124: cHt_p5p0 (cHt = +5.0)
+                # Note: Decomposition is hardcoded for cHt = ±5.0
                 
-                # Electrons (flavor = 11)
-                n_el = len(data['Electron_Pt'][i])
-                for j in range(n_el):
-                    leptons.append({
-                        'pt': data['Electron_Pt'][i][j],
-                        'eta': data['Electron_Eta'][i][j],
-                        'phi': data['Electron_Phi'][i][j],
-                        'E': data['Electron_E'][i][j],
-                        'charge': data['Electron_Charge'][i][j],
-                        'flavor': 11
-                    })
-                
-                # Muons (flavor = 13)
-                n_mu = len(data['Muon_Pt'][i])
-                for j in range(n_mu):
-                    leptons.append({
-                        'pt': data['Muon_Pt'][i][j],
-                        'eta': data['Muon_Eta'][i][j],
-                        'phi': data['Muon_Phi'][i][j],
-                        'E': data['Muon_E'][i][j],
-                        'charge': data['Muon_Charge'][i][j],
-                        'flavor': 13
-                    })
-                
-                # Require exactly 3 leptons
-                if len(leptons) != 3:
-                    n_wrong_lepton_count += 1
-                    continue
-                
-                # === STEP 2: Find Z boson (OSSF pair closest to mZ = 91.1876 GeV) ===
-                mZ = 91.1876
-                best_z_pair = None
-                best_mass_diff = float('inf')
-                
-                for idx1 in range(len(leptons)):
-                    for idx2 in range(idx1 + 1, len(leptons)):
-                        lep1 = leptons[idx1]
-                        lep2 = leptons[idx2]
+                if self.weight_type == "full":
+                    # Use full SMEFT weight at cHt = +5.0
+                    weight = np.stack(data['smeft_weights'])[:, 124]
+                    logging.info(f"  Using full SMEFT weight at cHt=5.0")
                         
-                        # Check OSSF: same flavor, opposite sign
-                        if lep1['flavor'] != lep2['flavor']:
-                            continue
-                        if lep1['charge'] * lep2['charge'] >= 0:
-                            continue
-                        
-                        # Calculate invariant mass
-                        px1 = lep1['pt'] * np.cos(lep1['phi'])
-                        py1 = lep1['pt'] * np.sin(lep1['phi'])
-                        pz1 = lep1['pt'] * np.sinh(lep1['eta'])
-                        px2 = lep2['pt'] * np.cos(lep2['phi'])
-                        py2 = lep2['pt'] * np.sin(lep2['phi'])
-                        pz2 = lep2['pt'] * np.sinh(lep2['eta'])
-                        
-                        E_tot = lep1['E'] + lep2['E']
-                        px_tot = px1 + px2
-                        py_tot = py1 + py2
-                        pz_tot = pz1 + pz2
-                        mass = np.sqrt(E_tot**2 - px_tot**2 - py_tot**2 - pz_tot**2)
-                        
-                        mass_diff = abs(mass - mZ)
-                        if mass_diff < best_mass_diff:
-                            best_mass_diff = mass_diff
-                            best_z_pair = (idx1, idx2)
-                
-                # Require valid Z candidate within 10 GeV window
-                if best_z_pair is None or best_mass_diff > 10.0:
-                    n_no_ossf += 1
-                    continue
-                
-                # === STEP 3: Identify leptons ===
-                z_idx1, z_idx2 = best_z_pair
-                # Order Z leptons by pT
-                if leptons[z_idx1]['pt'] > leptons[z_idx2]['pt']:
-                    z_lep1, z_lep2 = leptons[z_idx1], leptons[z_idx2]
-                else:
-                    z_lep1, z_lep2 = leptons[z_idx2], leptons[z_idx1]
-                
-                # Third lepton (from W)
-                w_lep_idx = [idx for idx in range(3) if idx not in best_z_pair][0]
-                w_lep = leptons[w_lep_idx]
-                
-                # === STEP 4: Select jets ===
-                n_jets = len(data['Jet_Pt'][i])
-                if n_jets < 3:
-                    n_no_jets += 1
-                    continue
-                
-                jets = []
-                for j in range(n_jets):
-                    jets.append({
-                        'pt': data['Jet_Pt'][i][j],
-                        'eta': data['Jet_Eta'][i][j],
-                        'phi': data['Jet_Phi'][i][j],
-                        'mass': data['Jet_Mass'][i][j],
-                        'E': data['Jet_E'][i][j],
-                        'btag': data['Jet_BTag'][i][j],
-                        'idx': j
-                    })
-                
-                # B-jet: highest BTag score
-                b_jet = max(jets, key=lambda j: j['btag'])
-                non_b_jets = [j for j in jets if j['idx'] != b_jet['idx']]
-                
-                if len(non_b_jets) < 2:
-                    n_no_jets += 1
-                    continue
-                
-                # Forward jet: maximizes invariant mass with b-jet
-                best_forward_jet = None
-                max_mass = -1
-                for jet in non_b_jets:
-                    # Calculate M(b-jet, jet)
-                    px_b = b_jet['pt'] * np.cos(b_jet['phi'])
-                    py_b = b_jet['pt'] * np.sin(b_jet['phi'])
-                    pz_b = b_jet['pt'] * np.sinh(b_jet['eta'])
-                    px_j = jet['pt'] * np.cos(jet['phi'])
-                    py_j = jet['pt'] * np.sin(jet['phi'])
-                    pz_j = jet['pt'] * np.sinh(jet['eta'])
+                elif self.weight_type == "sm":
+                    # Use SM weight only (from eventWeight branch)
+                    weight = data['eventWeight']
+                    logging.info(f"  Using SM weight only (eventWeight)")
                     
-                    E_tot = b_jet['E'] + jet['E']
-                    px_tot = px_b + px_j
-                    py_tot = py_b + py_j
-                    pz_tot = pz_b + pz_j
-                    mass = np.sqrt(max(0, E_tot**2 - px_tot**2 - py_tot**2 - pz_tot**2))
+                elif self.weight_type == "linear":
+                    # Extract linear term: w_lin = (w_plus - w_minus) / (2*c)
+                    # With c=5.0: w_lin = (w_plus - w_minus) / 10.0
+                    w_plus = np.stack(data['smeft_weights'])[:, 124]  # cHt = +5.0
+                    w_minus = np.stack(data['smeft_weights'])[:, 122]  # cHt = -5.0
+                    weight = (w_plus - w_minus) / 10.0
+                    logging.info(f"  Using linear SMEFT term (cHt=5.0 decomposition)")
                     
-                    if mass > max_mass:
-                        max_mass = mass
-                        best_forward_jet = jet
-                
-                forward_jet = best_forward_jet
-                
-                # Radiative jet: highest pT among remaining jets
-                remaining_jets = [j for j in non_b_jets if j['idx'] != forward_jet['idx']]
-                if len(remaining_jets) == 0:
-                    n_no_jets += 1
-                    continue
-                radiative_jet = max(remaining_jets, key=lambda j: j['pt'])
-                
-                # === STEP 5: Assemble features in physics-motivated order ===
-                # Order: Jets → Leptons → MET (groups correlated variables)
-                event_row = [
-                    # B-jet (jet1) - highest BTag score
-                    b_jet['pt'], b_jet['eta'], b_jet['phi'], b_jet['mass'], b_jet['btag'],
-                    # Forward jet (jet2) - most forward eta
-                    forward_jet['pt'], forward_jet['eta'], forward_jet['phi'], forward_jet['mass'], forward_jet['btag'],
-                    # Radiative jet (jet3) - highest pT of remaining
-                    radiative_jet['pt'], radiative_jet['eta'], radiative_jet['phi'], radiative_jet['mass'], radiative_jet['btag'],
-                    # Z leptons (ordered by pT)
-                    z_lep1['pt'], z_lep1['eta'], z_lep1['phi'], z_lep1['charge'],
-                    z_lep2['pt'], z_lep2['eta'], z_lep2['phi'], z_lep2['charge'],
-                    # W lepton
-                    w_lep['pt'], w_lep['eta'], w_lep['phi'], w_lep['charge'],
-                    # MET - global event property
-                    data['MET'][i], data['MET_phi'][i]
-                ]
-                
-                # Add weight if requested
-                if self.load_weights:
-                    event_row.append(data['smeft_weights'][i][124])  # cHt=5.0 weight
-                
-                event_data.append(event_row)
-                n_valid += 1
-            
-            logging.info(f"  Valid events: {n_valid}/{n_events}")
-            logging.info(f"  Rejected - wrong lepton count (!= 3): {n_wrong_lepton_count}")
-            logging.info(f"  Rejected - no OSSF pair: {n_no_ossf}")
-            logging.info(f"  Rejected - insufficient jets: {n_no_jets}")
-            
-            if len(event_data) > 0:
-                self.x = np.array(event_data, dtype=np.float32)
-                if self.load_weights:
-                    logging.info(f"Kept {len(self.x)} events with physics selection and cHt=5.0 weights")
+                elif self.weight_type == "quadratic":
+                    # Extract quadratic term: w_quad = (w_plus + w_minus - 2*w_sm) / (2*c^2)
+                    # With c=5.0: w_quad = (w_plus + w_minus - 2*w_sm) / 50.0
+                    w_plus = np.stack(data['smeft_weights'])[:, 124]  # cHt = +5.0
+                    w_minus = np.stack(data['smeft_weights'])[:, 122]  # cHt = -5.0
+                    w_sm = data['eventWeight']
+                    weight = (w_plus + w_minus - 2.0 * w_sm) / 50.0
+                    logging.info(f"  Using quadratic SMEFT term (cHt=5.0 decomposition)")
+                    
                 else:
-                    logging.info(f"Kept {len(self.x)} events with physics selection")
-                all_filtered_data.append(self.x)
+                    raise ValueError(f"Invalid weight_type: {self.weight_type}. "
+                                   f"Must be 'full', 'sm', 'linear', or 'quadratic'")
+                
+                columns.append(weight)
+
+            self.x = np.column_stack(columns).astype(np.float32)
+            logging.info(f"  Loaded {len(self.x)} events (all events in file)")
+
+            if self.load_weights:
+                logging.info(f"Kept {len(self.x)} events with cylindrical coordinates and {self.weight_type} weights")
             else:
-                logging.warning(f"No valid events found in {file_path}") 
+                logging.info(f"Kept {len(self.x)} events with cylindrical coordinates")
+            all_filtered_data.append(self.x) 
 
         dataset = np.concatenate(all_filtered_data, axis=0)
-        logging.info(f"Final ttz dataset shape after physics selection: {dataset.shape}")
+        logging.info(f"Final ttz dataset shape with cylindrical coordinates: {dataset.shape}")
         if self.load_weights:
-            logging.info(f"Shape: {dataset.shape[0]} events, {dataset.shape[1]-1} features + 1 weight column")
+            weight_desc = {
+                "full": "full SMEFT weight at cHt=5.0",
+                "sm": "SM weight (eventWeight)",
+                "linear": "linear SMEFT term (cHt=5.0)",
+                "quadratic": "quadratic SMEFT term (cHt=5.0)"
+            }[self.weight_type]
+            logging.info(f"Shape: {dataset.shape[0]} events, {dataset.shape[1]-1} features (15 cylindrical) + 1 weight column ({weight_desc})")
         
         # Shuffle the dataset before saving to ensure random sampling
-        np.random.shuffle(dataset)
-        logging.info("Shuffled dataset before saving")
+        # Use fixed seed for reproducibility across data regenerations
+        rng = np.random.RandomState(42)
+        rng.shuffle(dataset)
+        logging.info("Shuffled dataset before saving (seed=42 for reproducibility)")
 
         np.save(self.npy_file, dataset)
         logging.info(f"saved {self.npy_file} of shape {dataset.shape}!")
