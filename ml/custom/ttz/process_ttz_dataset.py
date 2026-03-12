@@ -23,7 +23,6 @@ class ttzNpyProcessor(NpyProcessor):
         hold_ratio=0.2,
         cut=None,
         load_weights=False,
-        weight_type="full"
     ):
         """ttz dataset to .npy starting processor.
 
@@ -45,13 +44,15 @@ class ttzNpyProcessor(NpyProcessor):
         hold_ratio : float, optional
             Ratio of holdout data in partition_2, by default 0.2.
         """
-        super().__init__(data_dir, base_file_name)
+        # Use a separate filename when storing all weight columns to avoid conflicts with
+        # the plain feature-only file.
+        _base = f"{base_file_name}_weights" if load_weights else base_file_name
+        super().__init__(data_dir, _base)
         self.file_name = None
         self.keep_ratio = keep_ratio
         self.shuffle = shuffle
         self.hold_mode, self.use_hold, self.hold_ratio = hold_mode, use_hold, 1 - hold_ratio
         self.load_weights = load_weights
-        self.weight_type = weight_type
         self.list_data_features = list_data_features
         
         # Define features for processed data - must match the order in create_dataset()
@@ -82,9 +83,12 @@ class ttzNpyProcessor(NpyProcessor):
             else:
                 self.features["colnames"][feature] = "cont"
         
-        # Add cHt weight if loading weights
+        # Add all SMEFT weight columns if loading weights (cols 15-18: sm, linear, quadratic, full)
         if self.load_weights:
-            self.features["colnames"]["cHt_weight"] = "weight"
+            self.features["colnames"]["cHt_weight_sm"]        = "weight"
+            self.features["colnames"]["cHt_weight_linear"]    = "weight"
+            self.features["colnames"]["cHt_weight_quadratic"] = "weight"
+            self.features["colnames"]["cHt_weight_full"]      = "weight"
         
         # Save updated features to variables.json (overwrite parent class load)
         import json
@@ -179,7 +183,7 @@ class ttzNpyProcessor(NpyProcessor):
         logging.info("Loading ttz dataset from ROOT files with pre-identified physics objects!")
 
         # File path - new ATLAS processed file with physics objects already identified
-        file_path_1 = "/project/atlas/users/kdevries/EventLoop/full_SR_ttZ_tree.root"
+        file_path_1 = "/project/atlas/users/kdevries/EventLoop/ttZ_for_Melle_tree.root"
 
         # Required branches - load cylindrical coordinates directly from ROOT file
         branches_to_load = [
@@ -190,8 +194,8 @@ class ttzNpyProcessor(NpyProcessor):
             'MET', 'MET_phi'
         ]
         if self.load_weights:
-            # For SMEFT weight decomposition, we need eventWeight and smeft_weights
-            branches_to_load.extend(['eventWeight', 'smeft_weights'])
+            # For SMEFT weight decomposition, we need eventWeight only (smeft_weights loaded separately)
+            branches_to_load.append('eventWeight')
 
         # Load and concatenate data from all files
         all_filtered_data = []
@@ -200,6 +204,21 @@ class ttzNpyProcessor(NpyProcessor):
             with uproot.open(file_path) as file_ttz:
                 tree_ttz = file_ttz["Events"]
                 data = tree_ttz.arrays(branches_to_load, library="np")
+                if self.load_weights:
+                    # Load smeft_weights with awkward to handle ragged arrays, extract only needed indices
+                    import awkward as ak
+                    smeft_ak = tree_ttz.arrays(['smeft_weights'], library="ak")['smeft_weights']
+                    # Some events have fewer than 125 weight values — drop them
+                    valid_mask = ak.to_numpy(ak.num(smeft_ak) > 124)
+                    n_dropped = int((~valid_mask).sum())
+                    if n_dropped:
+                        logging.warning(f"  Dropping {n_dropped} events with <125 SMEFT weights")
+                        smeft_ak = smeft_ak[valid_mask]
+                        for key in list(data.keys()):
+                            data[key] = data[key][valid_mask]
+                    w_plus_raw  = ak.to_numpy(smeft_ak[:, 124]).astype(np.float32)  # cHt = +5.0
+                    w_minus_raw = ak.to_numpy(smeft_ak[:, 122]).astype(np.float32)  # cHt = -5.0
+                    logging.info(f"  Loaded smeft_weights indices 122/124 via awkward ({len(w_plus_raw)} events)")
 
             n_events = len(data['MET'])
             logging.info(f"Processing {n_events} events from {file_path}")
@@ -216,50 +235,25 @@ class ttzNpyProcessor(NpyProcessor):
                 data['MET'],           data['MET_phi'],
             ]
             if self.load_weights:
-                # Compute appropriate SMEFT weight based on weight_type
+                # Compute all SMEFT weight decomposition components and store as separate columns.
                 # Weight indices for ttz (from ml/data/ttz/cHt_weight_indices.txt):
                 #   122: cHt_m5p0 (cHt = -5.0)
                 #   124: cHt_p5p0 (cHt = +5.0)
-                # Note: Decomposition is hardcoded for cHt = ±5.0
-                
-                if self.weight_type == "full":
-                    # Use full SMEFT weight at cHt = +5.0
-                    weight = np.stack(data['smeft_weights'])[:, 124]
-                    logging.info(f"  Using full SMEFT weight at cHt=5.0")
-                        
-                elif self.weight_type == "sm":
-                    # Use SM weight only (from eventWeight branch)
-                    weight = data['eventWeight']
-                    logging.info(f"  Using SM weight only (eventWeight)")
-                    
-                elif self.weight_type == "linear":
-                    # Extract linear term: w_lin = (w_plus - w_minus) / (2*c)
-                    # With c=5.0: w_lin = (w_plus - w_minus) / 10.0
-                    w_plus = np.stack(data['smeft_weights'])[:, 124]  # cHt = +5.0
-                    w_minus = np.stack(data['smeft_weights'])[:, 122]  # cHt = -5.0
-                    weight = (w_plus - w_minus) / 10.0
-                    logging.info(f"  Using linear SMEFT term (cHt=5.0 decomposition)")
-                    
-                elif self.weight_type == "quadratic":
-                    # Extract quadratic term: w_quad = (w_plus + w_minus - 2*w_sm) / (2*c^2)
-                    # With c=5.0: w_quad = (w_plus + w_minus - 2*w_sm) / 50.0
-                    w_plus = np.stack(data['smeft_weights'])[:, 124]  # cHt = +5.0
-                    w_minus = np.stack(data['smeft_weights'])[:, 122]  # cHt = -5.0
-                    w_sm = data['eventWeight']
-                    weight = (w_plus + w_minus - 2.0 * w_sm) / 50.0
-                    logging.info(f"  Using quadratic SMEFT term (cHt=5.0 decomposition)")
-                    
-                else:
-                    raise ValueError(f"Invalid weight_type: {self.weight_type}. "
-                                   f"Must be 'full', 'sm', 'linear', or 'quadratic'")
-                
-                columns.append(weight)
-
+                # Column layout: 15=sm, 16=linear, 17=quadratic, 18=full
+                # Indices already extracted via awkward arrays above (handles ragged arrays correctly)
+                w_sm       = data['eventWeight']                              # col 15
+                w_plus     = w_plus_raw                                       # cHt = +5.0  (col 18)
+                w_minus    = w_minus_raw                                      # cHt = -5.0
+                w_linear   = (w_plus - w_minus) / 10.0                       # col 16
+                w_quad     = (w_plus + w_minus - 2.0 * w_sm) / 50.0         # col 17
+                w_full     = w_plus                                           # col 18
+                columns.extend([w_sm, w_linear, w_quad, w_full])
+                logging.info(f"  Appended 4 weight columns: sm(15), linear(16), quadratic(17), full(18)")
             self.x = np.column_stack(columns).astype(np.float32)
             logging.info(f"  Loaded {len(self.x)} events (all events in file)")
 
             if self.load_weights:
-                logging.info(f"Kept {len(self.x)} events with cylindrical coordinates and {self.weight_type} weights")
+                logging.info(f"Kept {len(self.x)} events with cylindrical coordinates and all 4 weight columns")
             else:
                 logging.info(f"Kept {len(self.x)} events with cylindrical coordinates")
             all_filtered_data.append(self.x) 
@@ -267,13 +261,7 @@ class ttzNpyProcessor(NpyProcessor):
         dataset = np.concatenate(all_filtered_data, axis=0)
         logging.info(f"Final ttz dataset shape with cylindrical coordinates: {dataset.shape}")
         if self.load_weights:
-            weight_desc = {
-                "full": "full SMEFT weight at cHt=5.0",
-                "sm": "SM weight (eventWeight)",
-                "linear": "linear SMEFT term (cHt=5.0)",
-                "quadratic": "quadratic SMEFT term (cHt=5.0)"
-            }[self.weight_type]
-            logging.info(f"Shape: {dataset.shape[0]} events, {dataset.shape[1]-1} features (15 cylindrical) + 1 weight column ({weight_desc})")
+            logging.info(f"Shape: {dataset.shape[0]} events, 15 features + 4 weight columns = {dataset.shape[1]} total")
         
         # Shuffle the dataset before saving to ensure random sampling
         # Use fixed seed for reproducibility across data regenerations

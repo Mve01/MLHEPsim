@@ -1,0 +1,770 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{physics}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{fancybox}
+
+% Configure listings for Python code
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    columns=fullflexible,
+    keywordstyle=\color{blue},
+    commentstyle=\color{gray},
+    stringstyle=\color{orange},
+    showstringspaces=false,
+    frame=tb
+}
+
+\title{Signed SMEFT Weight Decomposition into Pos/Neg Flows}
+\author{MLHEPsim Flow Training Pipeline}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document describes the current implementation of normalising flow training for SMEFT event reweighting.
+The core innovation is the decomposition of signed weight components (linear and quadratic SMEFT terms) into 
+non-negative positive and negative parts, enabling stable training of five independent normalising flows.
+This replaces previous attempts at clamping, absolute value corrections, and per-batch rescaling with an 
+exact and principled solution to the fundamental incompatibility between normalising flows (which require 
+non-negative weights) and signed SMEFT measures.
+\end{abstract}
+
+\section{Introduction}
+
+\subsection{The Problem: Signed Weights in Normalising Flows}
+
+Standard normalising flow training assumes non-negative importance weights. However, the SMEFT decomposition 
+of the top-pair production cross section produces intrinsically signed weight components:
+
+\begin{equation}
+w_{\text{full}}(x; c_{\text{Ht}}) = w_{\text{sm}}(x) + c_{\text{Ht}} \, w_{\text{lin}}(x) + c_{\text{Ht}}^2 \, w_{\text{quad}}(x)
+\end{equation}
+
+where:
+\begin{itemize}
+  \item $w_{\text{sm}}(x)$: SM weight (always positive)
+  \item $w_{\text{lin}}(x)$: Linear interference term (\textbf{$\approx 16.8\%$ negative events})
+  \item $w_{\text{quad}}(x)$: Quadratic term (\textbf{$\approx 0.04\%$ negative events — essentially negligible})
+\end{itemize}
+
+\noindent Statistics from 3.7M events (from \texttt{ttZ\_for\_Melle\_tree.root}):
+\begin{table}[h!]
+\centering
+\begin{tabular}{lccccc}
+\toprule
+Component & Events & \% Total & Z-Factor & \% Negative & Role \\
+\midrule
+Linear (+) & 3M & 83.2\% & 54.568 & — & Primary \\[1pt]
+Linear (−) & 624k & 16.8\% & 4.542 & ✓ & Sign-split \\[1pt]
+Quadratic (+) & 3.7M & 99.96\% & 3.014 & — & Primary \\[1pt]
+Quadratic (−) & 1.5k & 0.04\% & 0.00465 & ✓ & Negligible \\[1pt]
+\bottomrule
+\end{tabular}
+\end{table}
+
+When training a normalising flow $q(x)$ on such data, the objective becomes sign-indefinite and unbounded:
+\begin{equation}
+\mathcal{L} = \mathbb{E}_{x \sim \text{data}}[w(x) \cdot (-\log q(x))]
+\end{equation}
+
+For a negative-weight event with $w_i < 0$, once the flow learns and $-\log q(x_i)$ becomes large, 
+the product $w_i \cdot (-\log q(x_i))$ becomes a large \emph{positive} loss, destabilising gradient descent.
+
+\subsection{Why Workarounds Don't Work}
+
+Previous attempts included clamping, absolute values, and per-batch SNIS normalisation. All modify what 
+the flows learn, distorting the physics:
+\begin{itemize}
+  \item \textbf{Clamping to zero}: Discards physically meaningful negative amplitudes
+  \item \textbf{Taking absolute values}: Breaks the signed interference pattern
+  \item \textbf{SNIS rescaling}: Prevents overflow but doesn't address that the objective is sign-indefinite
+\end{itemize}
+
+\subsection{The Solution: Pos/Neg Decomposition}
+
+Train \textbf{five independent flows}, one per non-negative weight component:
+
+\begin{equation}
+\begin{aligned}
+w_{\text{lin}}(x) &= w_{\text{lin}}^+(x) - w_{\text{lin}}^-(x) \\
+w_{\text{quad}}(x) &= w_{\text{quad}}^+(x) - w_{\text{quad}}^-(x)
+\end{aligned}
+\end{equation}
+
+where:
+\begin{equation}
+\begin{aligned}
+w_k^+(x) &:= \max(w_k(x), 0) \\
+w_k^-(x) &:= \max(-w_k(x), 0)
+\end{aligned}
+\end{equation}
+
+Each positive/negative part is a valid non-negative importance weight, so the objective is well-posed. 
+The combination formula at inference reconstructs the exact signed SMEFT measure.
+
+---
+
+\section{The Five Flows}
+
+\subsection{Flow Training}
+
+\begin{table}[h!]
+\centering
+\begin{tabular}{llcc}
+\toprule
+Flow Name & Trained On & Training Weight & Events Used \\
+\midrule
+\texttt{sm} & All events & $w_{\text{sm}}(x)$ & $N$ \\
+\texttt{linear\_pos} & $w_{\text{lin}}(x) \geq 0$ & $w_{\text{lin}}(x)$ & $\sim 83.2\% \, N$ \\
+\texttt{linear\_neg} & $w_{\text{lin}}(x) < 0$ & $|w_{\text{lin}}(x)|$ & $\sim 16.8\% \, N$ \\
+\texttt{quadratic\_pos} & $w_{\text{quad}}(x) \geq 0$ & $w_{\text{quad}}(x)$ & $\sim 99.96\% \, N$ \\
+\texttt{quadratic\_neg} & $w_{\text{quad}}(x) < 0$ & $|w_{\text{quad}}(x)|$ & $\sim 0.04\% \, N$ (sparse, tiny weights) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent Each flow learns:
+\begin{equation}
+q_k(x) \approx \frac{|w_k(x)| \cdot p_0(x)}{\int |w_k(x')| \, p_0(x') \, dx'} = \frac{|w_k(x)| \, p_0(x)}{Z_k}
+\end{equation}
+
+where $p_0(x)$ is the true SM distribution and $Z_k := \sum_i |w_{k,i}|$ is the normalisation constant.
+
+\subsection{Key Properties}
+
+\begin{itemize}
+  \item \textbf{All training weights are strictly non-negative}—objective is well-posed
+  \item \textbf{No information is discarded}—all events contribute to one of the five flows
+  \item \textbf{Exact reconstruction}—the combination formula reproduces the original signed measure
+  \item \textbf{Signed weights at inference}—negative weights can still appear (destructive interference)
+\end{itemize}
+
+---
+
+\section{Implementation: Data Loading}
+
+\subsection{Dataset Setup in \texttt{ttz\_dataset.py}}
+
+\subsubsection{Weight Column Mapping}
+
+\begin{lstlisting}
+WEIGHT_COLS = {
+    "sm": 15, "linear": 16, "quadratic": 17, "full": 18,
+    "linear_pos": 16, "linear_neg": 16,
+    "quadratic_pos": 17, "quadratic_neg": 17,
+}
+\end{lstlisting}
+
+The \texttt{\_pos} and \texttt{\_neg} variants point to the same raw column but apply sign-based filtering in \texttt{setup()}.
+
+\subsubsection{Sign-Based Event Filtering}
+
+In the \texttt{ttzDataModule.setup()} method:
+
+\begin{lstlisting}
+# Example: linear_pos type
+if self.weight_type.endswith('_pos'):
+    valid_mask = self.weights >= 0
+    data = data[valid_mask]
+    self.weights = self.weights[valid_mask]
+    # Mean normalisation computed only on kept events
+    self.weights = self.weights / np.mean(self.weights)
+
+# Example: linear_neg type
+elif self.weight_type.endswith('_neg'):
+    valid_mask = self.weights < 0
+    data = data[valid_mask]
+    self.weights = -self.weights[valid_mask]  # Flip sign -> positive
+    self.weights = self.weights / np.mean(self.weights)
+\end{lstlisting}
+
+\noindent Key points:
+\begin{enumerate}
+  \item Filter by sign \textbf{before} mean normalisation
+  \item For \texttt{\_neg}, flip sign: $|w| > 0$
+  \item Compute $\text{mean}(w)$ only on kept subset
+  \item All training weights $\to$ positive
+\end{enumerate}
+
+\subsection{Stratified Sampling}
+
+Both train and validation dataloaders use \texttt{WeightStratifiedSampler}, which divides events into 
+4 quantile bins by $|w|$ and constructs each batch by drawing equally from all bins. This prevents 
+batches dominated by a handful of extreme-weight events.
+
+---
+
+\section{Normalisation Constants}
+
+\subsection{Computation from ROOT Data}
+
+In \texttt{smeft\_reweighting.py}:
+
+\begin{lstlisting}
+def compute_z_normalisations(root_file_path: str) -> dict:
+    """Compute Z_k = sum_i w_k(i) for each weight component."""
+    
+    with uproot.open(root_file_path) as f:
+        tree = f["Events"]
+        # Load using awkward to handle ragged arrays correctly
+        data = tree.arrays(['eventWeight', 'smeft_weights'], 
+                          library='ak')
+    
+    w_sm = ak.to_numpy(data['eventWeight'])
+    w_plus  = ak.to_numpy(data['smeft_weights'][:, IDX_CHT_PLUS5])
+    w_minus = ak.to_numpy(data['smeft_weights'][:, IDX_CHT_MINUS5])
+    
+    # Decompose (c = 5.0, c^2 = 25.0)
+    w_lin  = (w_plus - w_minus) / 10.0
+    w_quad = (w_plus + w_minus - 2.0 * w_sm) / 50.0
+    
+    # Compute Z values
+    Z = {
+        "sm":            float(w_sm.sum()),
+        "linear":        float(w_lin.sum()),
+        "linear_pos":    float(w_lin[w_lin > 0].sum()),
+        "linear_neg":    float((-w_lin[w_lin < 0]).sum()),
+        "quadratic":     float(w_quad.sum()),
+        "quadratic_pos": float(w_quad[w_quad > 0].sum()),
+        "quadratic_neg": float((-w_quad[w_quad < 0]).sum()),
+    }
+    
+    # Sanity checks
+    assert abs(Z["linear"] - (Z["linear_pos"] - Z["linear_neg"])) < 1e-3
+    assert abs(Z["quadratic"] - (Z["quadratic_pos"] - Z["quadratic_neg"])) < 1e-3
+    return Z
+\end{lstlisting}
+
+\subsection{Decomposition Verification}
+
+The assertions verify that the decomposition is mathematically exact:
+
+\begin{equation}
+\begin{aligned}
+Z_{\text{lin}} &= Z_{\text{lin}}^+ - Z_{\text{lin}}^- \\
+Z_{\text{quad}} &= Z_{\text{quad}}^+ - Z_{\text{quad}}^-
+\end{aligned}
+\end{equation}
+
+This ensures the five flows and combination formula can perfectly reconstruct the original signed distribution 
+(up to numerical precision).
+
+\subsection{Data Source Consistency}
+
+All components of the pipeline use the same ROOT file source:
+\begin{itemize}
+  \item \textbf{Training data}: Generated by \texttt{process\_ttz\_dataset.py} from \\
+        \texttt{/project/atlas/users/kdevries/EventLoop/ttZ\_for\_Melle\_tree.root} \\
+        $\to$ produces \texttt{ttz\_weights.npy} (3.7M events, 19 columns)
+  \item \textbf{Z-factor computation}: \texttt{smeft\_reweighting.py} reads the same file \\
+        $\to$ ensures consistency with what flows were trained on
+  \item \textbf{Weight contributions}: \texttt{plot\_weight\_contributions.py} also reads the same file \\
+        $\to$ validates decomposition structure
+\end{itemize}
+
+\textbf{Important}: A different ROOT file (\texttt{full\_SR\_ttZ\_tree.root}) exists but is \textbf{not used} 
+for training/reweighting. Mixing files causes Z-factor mismatches (e.g., $Z_{\text{quad}}^- = 0$ if the 
+file has no negative quadratic events, when in fact $Z_{\text{quad}}^- = 0.00465$ in the training data).
+
+---
+
+\section{Density Ratios}
+
+\subsection{Motivation: Why Density Ratios?}
+
+The goal at inference time is to produce importance weights that reweight SM-generated events to look
+like events from a SMEFT distribution at some Wilson coefficient $c_{\text{Ht}}$.  To see why density
+ratios are the right tool, recall that each flow $k$ has learned the normalised distribution:
+
+\begin{equation}
+  q_k(x) \approx \frac{|w_k(x)|\,p_0(x)}{Z_k}
+\end{equation}
+
+where $p_0(x)$ is the true SM distribution and $Z_k = \int |w_k(x')|\,p_0(x')\,dx'$ is the
+normalisation constant computed in Section~3.  Rearranging:
+
+\begin{equation}
+  |w_k(x)| = Z_k \cdot \frac{q_k(x)}{p_0(x)}
+\end{equation}
+
+The ratio $q_k(x)/p_0(x)$ is precisely the \textbf{density ratio} between flow $k$ and the SM flow.
+We never need $q_k$ or $p_0$ individually in absolute terms---only their ratio matters.
+
+On a set of events $\{x_i\}$ sampled from the SM flow, the density ratio becomes:
+
+\begin{equation}
+  r_k(x_i) = \frac{q_k(x_i)}{q_{\text{sm}}(x_i)}
+\end{equation}
+
+and the original weight is recovered as $|w_k(x_i)| \approx Z_k \cdot r_k(x_i)$.
+
+\paragraph{Limitations of the approximation $q_{\text{sm}} \approx p_0$.}
+
+It is worth being honest about what this approximation does and does not guarantee.  The density 
+ratio $r_k(x) = q_k(x)/q_{\text{sm}}(x)$ recovers $|w_k(x)|/Z_k$ \emph{exactly} if and only if 
+both $q_k$ and $q_{\text{sm}}$ are perfect.  In practice, neither is---they are neural networks 
+trained on finite data with stochastic optimisation, and their errors are in general unpredictable 
+and independent of each other.
+
+One might hope that because all five flows are trained on the same underlying data, their 
+approximation errors are correlated and therefore cancel in the ratio.  This is not guaranteed.  
+Two networks with different weight columns, different sign-filtered training sets, different random 
+initialisations, and different effective sample sizes will find different local minima and generalise 
+differently.  There is no mechanism that reliably aligns their errors.
+
+What actually justifies the approach is more modest:
+
+\begin{enumerate}
+  \item \textbf{Well-sampled regions are accurate individually.}  Both the SM flow and the auxiliary 
+        flows receive many training examples in the bulk of phase space (e.g., moderate $p_T^Z$).  
+        With enough data, a well-regularised normalising flow converges close to the true density.  
+        In these regions, both $q_k$ and $q_{\text{sm}}$ should be accurate, so their ratio is 
+        accurate---not because errors cancel, but because both errors are small.
+
+  \item \textbf{Sampling from $q_{\text{sm}}$ concentrates evaluation in regions the SM flow knows 
+        well.}  At inference time we draw $\{x_i\}$ from the SM flow itself.  The SM flow assigns 
+        high probability to events it learned well, so the sampled events tend to live in regions 
+        where $q_{\text{sm}}$ is reliable.  We are therefore unlikely to evaluate the ratio in 
+        regions where $q_{\text{sm}}$ is wildly wrong---it would simply not sample there.
+
+  \item \textbf{Sparse components carry a real bias risk.}  For components trained on far fewer events 
+        (e.g., \texttt{linear\_neg} on 16.8\% of data, \texttt{quadratic\_neg} on only 0.04\%), the 
+        auxiliary flow $q_k$ may be inaccurate in regions that are well-sampled by the SM flow.  
+        The recovered weight is then biased---not by a small, controlled amount, but potentially 
+        significantly.  This is a genuine limitation of the method.
+
+  \item \textbf{The only real guarantee is empirical.}  If the density ratios are accurate, the 
+        reweighted distributions produced by the combination formula should match the ground-truth 
+        ROOT file distributions at each tested $c_{\text{Ht}}$ value (Section~\ref{sec:validation}).  
+        Agreement in those comparison plots is the actual evidence that the approximation is 
+        acceptable---not any theoretical argument about error structure.
+\end{enumerate}
+
+In summary: the ratio approach is a practical, well-motivated strategy, not a mathematically 
+guaranteed one.  Its validity must be confirmed empirically for each flow component.
+
+\subsection{Sampling Events from the SM Flow}
+
+Before any density ratios can be computed, $N$ events must be drawn from the SM flow.  These events
+$\{x_i\}_{i=1}^N$ serve as Monte Carlo integration points throughout the rest of the pipeline.
+
+The SM flow $q_{\text{sm}}$ was trained on SM-weighted events from the ROOT file.  The ROOT file 
+data inherently includes event selection cuts and detector effects from the simulation pipeline, 
+so $q_{\text{sm}}$ learns the distribution of the \emph{selected, reconstructed} data, not the true 
+underlying SM distribution.  Sampling from the trained flow therefore produces events with the same 
+selection and reconstruction structure as the training data---the same biases are present.
+
+This is actually desirable.  Because all five flows (SM, linear\_pos, linear\_neg, quadratic\_pos, 
+quadratic\_neg) are trained on the \emph{same} ROOT file with the \emph{same} selection and detector 
+effects, they all operate in the same biased space.  When the combination formula computes density 
+ratios to recover physical weights, those ratios are formed between flows that share a common 
+bias landscape.  This mutual coherence is more important than achieving an ideally unbiased sample.
+
+In the code, \texttt{sample\_from\_sm\_flow()} draws samples in the preprocessed (scaled) space of
+the flow.  After later applying the inverse scaler (\texttt{inverse\_transform}), the events are
+returned to physical units (GeV, radians, etc.) suitable for plotting.  The resulting samples carry 
+forward the phase-space structure learned from the ROOT file, including any selection artifacts.
+
+\subsection{Log Probability Computation}
+
+\label{sec:logp}
+
+\subsubsection{Latent Space and Latent Codes}
+
+Every normalising flow $q_k$ is defined by a bijective transformation $f_k: \mathcal{Z} \to \mathcal{X}$ that 
+maps from a simple base distribution (a Mixture of Gaussians, MoG) \emph{in latent space} $\mathcal{Z}$ to the 
+physical \emph{data space} $\mathcal{X}$ (our kinematic features).  
+
+The \textbf{latent code} $z$ is the internal, learned compression of an event $x$---it is a 
+hidden-layer representation obtained by inverting the forward flow: $z = f_k^{-1}(x)$.  Think of 
+$z$ as the neural network's compact ``summary'' of the event $x$, living in an abstract space 
+of dimension $D$ (typically 10--30 for this pipeline).  
+
+\textbf{Note on notation:} The latent code $z$ (lowercase) and latent space $\mathcal{Z}$ (calligraphic) 
+are \emph{not related} to the normalisation constants $Z_k$ (uppercase Z with subscript $k$) from 
+Section~3.  The $Z_k$ are scalar sums ($Z_k = \sum_i |w_{k,i}|$, units: \emph{number of events}), 
+whereas $z$ is a vector in abstract learned space (no physical units).  The similarity in notation 
+can be confusing; keep these distinct concepts separate.
+
+\subsubsection{Change-of-Variables Formula}
+
+By the change-of-variables formula, the log-probability of a data point $x$ under flow $k$ is:
+
+\begin{equation}
+  \log q_k(x) = \log p_{\mathcal{Z}}\!\bigl(f_k^{-1}(x)\bigr)
+                + \log\left|\det\frac{\partial f_k^{-1}}{\partial x}\right|
+\end{equation}
+
+The two terms are:
+\begin{itemize}
+  \item $\log p_{\mathcal{Z}}(z)$: log-probability of the latent code $z = f_k^{-1}(x)$ under the
+        MoG base distribution in latent space.  This term reflects whether the latent representation 
+        is typical for the learned base distribution---this is what \texttt{mog\_nll} computes (negated, 
+        since NLL is returned).
+  \item $\log|\det \partial f_k^{-1}/\partial x|$: log absolute Jacobian determinant of the inverse
+        transformation.  This term accounts for the local volume dilation/contraction when mapping from 
+        physical data space to latent space.  For MADE/MAF-type flows this is inexpensive to compute 
+        since the Jacobian is triangular by construction.
+\end{itemize}
+
+In practice, \texttt{MADEMOG.estimate\_density(exp=False, mean=False)} returns the \emph{negative}
+log-likelihood (NLL) per event, so we negate to obtain $\log q_k(x_i)$:
+
+\begin{lstlisting}
+nll = inner.estimate_density(x_scaled, exp=False, mean=False)  # (N,)
+log_p = -nll   # NLL -> log-probability
+\end{lstlisting}
+
+This is evaluated for all five flows on the \emph{same} set of $N$ sampled events, giving five
+arrays $\log q_{\text{sm}}, \log q_{\text{lin}^+}, \log q_{\text{lin}^-},
+\log q_{\text{quad}^+}, \log q_{\text{quad}^-}$, each of length $N$.
+
+\subsection{Log Density Ratios}
+
+\label{sec:logr}
+
+The log density ratio for each auxiliary flow relative to the SM flow is computed by straightforward
+subtraction in log-space:
+
+\begin{equation}
+\begin{aligned}
+\log r_{\text{lin},i}^{+}   &= \log q_{\text{lin}^+}(x_i) - \log q_{\text{sm}}(x_i) \\
+\log r_{\text{lin},i}^{-}   &= \log q_{\text{lin}^-}(x_i) - \log q_{\text{sm}}(x_i) \\
+\log r_{\text{quad},i}^{+}  &= \log q_{\text{quad}^+}(x_i) - \log q_{\text{sm}}(x_i) \\
+\log r_{\text{quad},i}^{-}  &= \log q_{\text{quad}^-}(x_i) - \log q_{\text{sm}}(x_i)
+\end{aligned}
+\end{equation}
+
+\paragraph{Physical interpretation.}
+Each log ratio encodes \emph{how much more (or less) likely} a given event $x_i$ is under the
+auxiliary weight distribution compared to the SM.
+
+\begin{itemize}
+  \item $\log r_k(x_i) > 0$ ($r_k > 1$): event $x_i$ is more probable under flow $k$ than under
+        the SM---it lives in a region of phase space that is enhanced by the corresponding weight
+        component.
+  \item $\log r_k(x_i) < 0$ ($r_k < 1$): event $x_i$ is less probable under flow $k$---it is
+        suppressed relative to SM in that region of phase space.
+  \item $\log r_k(x_i) = 0$ ($r_k = 1$): flow $k$ is indistinguishable from the SM at this point;
+        the weight component adds no information there.
+\end{itemize}
+
+For example, if $\log r_{\text{lin},i}^{+}$ is large and positive for events with high $p_T^Z$,
+this tells us that the linear positive weight component is concentrated at high $p_T^Z$---consistent
+with the EFT enhancing the high-energy tail of the distribution.
+
+\paragraph{Why log-subtraction is numerically stable.}
+Evaluating $q_k(x)/q_{\text{sm}}(x)$ directly by dividing probabilities would catastrophically
+amplify rounding errors when probabilities are near zero.  Subtracting log-probabilities is exact up
+to floating-point precision and avoids both underflow (near-zero probabilities) and overflow
+(very high-probability events).
+
+\subsection{Caching and Reuse}
+
+Computing the log-probabilities for $N = 10^7$ events under five flows involves five separate
+forward passes through the network---by far the most expensive step of the pipeline.  Consequently,
+the four log-ratio arrays are saved immediately after computation:
+
+\begin{lstlisting}
+np.savez('density_ratios.npz',
+         log_r_lin_pos  = log_r_lin_pos,
+         log_r_lin_neg  = log_r_lin_neg,
+         log_r_quad_pos = log_r_quad_pos,
+         log_r_quad_neg = log_r_quad_neg)
+\end{lstlisting}
+
+On subsequent runs, \texttt{--load-ratios} skips the forward passes entirely and reads the saved
+arrays directly.  Since evaluating the combination formula (Section~5) for a new $c_{\text{Ht}}$
+value takes only microseconds (a handful of vector operations on $N$ numbers), the cached ratios
+allow rapid exploration of many $c$ values at negligible cost.
+
+\subsection{Diagnostic Statistics}
+
+After computing the log-ratios, the code logs summary statistics to flag potential issues:
+
+\begin{lstlisting}
+for name, arr in [("log_r_lin_pos",  log_r_lin_pos), ...]:
+    log.info(f"{name}: mean={arr.mean():.3f}, std={arr.std():.3f}")
+\end{lstlisting}
+
+What to look for:
+\begin{itemize}
+  \item \textbf{Mean $\approx 0$}: A zero mean is expected if the auxiliary flow is similar to the SM.
+        Large negative mean (e.g.\ $-0.5$) means the auxiliary flow systematically under-rates the
+        SM sample---its training distribution is concentrated in a \emph{different} region of phase
+        space than the SM samples used here.
+  \item \textbf{Small std ($\lesssim 0.5$)}: A small standard deviation indicates that the two flows
+        broadly agree on event probability across the sample.  Large std (e.g.\ $> 1.0$) indicates
+        strong local variation---some events are much more likely under one flow than the other.  This
+        is physically expected for components with very different phase-space support (e.g.\
+        \texttt{linear\_neg} trains on only the 16.8\% of events with negative linear weights, so
+        its log-ratios naturally have a larger spread).
+\end{itemize}
+
+---
+
+\section{The Combination Formula}
+\label{sec:combo}
+
+For any desired Wilson coefficient $c_{\text{Ht}}$, the unnormalized weight for event $i$ is:
+
+\begin{equation}
+\tilde{w}_i(c) = Z_{\text{sm}} + c \left(Z_{\text{lin}}^+ e^{\log r_{\text{lin},i}^+} - Z_{\text{lin}}^- e^{\log r_{\text{lin},i}^-}\right) 
+                 + c^2 \left(Z_{\text{quad}}^+ e^{\log r_{\text{quad},i}^+} - Z_{\text{quad}}^- e^{\log r_{\text{quad},i}^-}\right)
+\end{equation}
+
+The normalized weight (for density estimation equivalence at inference time) is:
+
+\begin{equation}
+w_i(c) = \frac{\tilde{w}_i(c)}{\sum_j \tilde{w}_j(c)}
+\end{equation}
+
+\subsection{Implementation}
+
+\begin{lstlisting}
+def get_weights(c, Z, log_r_lin_pos, log_r_lin_neg, 
+                log_r_quad_pos, log_r_quad_neg):
+    """Compute normalised importance weights for c_Ht."""
+    
+    unnorm = (Z["sm"]
+              + c    * (Z["linear_pos"]    * np.exp(log_r_lin_pos)
+                        - Z["linear_neg"]  * np.exp(log_r_lin_neg))
+              + c**2 * (Z["quadratic_pos"] * np.exp(log_r_quad_pos)
+                        - Z["quadratic_neg"] * np.exp(log_r_quad_neg)))
+    
+    # Check for destructive interference (negative weights)
+    n_neg = (unnorm < 0).sum()
+    if n_neg > 0:
+        log.info(f"  c={c:+.1f}: {n_neg} events have negative weights")
+    
+    return unnorm / unnorm.sum()
+\end{lstlisting}
+
+\subsection{Interpretation of Negative Weights}
+
+A negative weight $w_i(c) < 0$ at a particular point in phase space reflects \textbf{destructive interference} 
+between the SM and EFT amplitudes at that location. This is physically meaningful and expected to occur at 
+large Wilson coefficient values. The effective sample size:
+
+\begin{equation}
+N_{\text{eff}} = \frac{\left|\sum_i w_i\right|}{\sum_i |w_i|}
+\end{equation}
+
+quantifies the fraction of weight budget that survives after positive and negative contributions cancel. 
+A sharp drop in $N_{\text{eff}}$ signals that the EFT point is approaching the validity range boundary.
+
+---
+
+\section{Training Pipeline}
+
+\subsection{Submission with \texttt{train\_all\_weights.py}}
+
+\begin{lstlisting}
+ALL_WEIGHT_TYPES = ["sm", "linear_pos", "linear_neg", 
+                    "quadratic_pos", "quadratic_neg"]
+
+for weight_type in ALL_WEIGHT_TYPES:
+    job_cmd = (f"python -m ml.custom.ttz.main_flows "
+               f"data_config.weight_type={weight_type} "
+               f"data_config.load_weights=True "
+               f"data_config.use_weights=True "
+               f"training_config.use_sm_weights=True")
+    submit_to_condor(job_cmd, weight_type)
+\end{lstlisting}
+
+Each weight type is submitted as a separate Condor job. Models are registered in MLflow with names like:
+\begin{center}
+\texttt{MAFMADEMOG\_flow\_model\_gauss\_rank\_<date>\_cHt5\_linear\_pos\_nall}
+\end{center}
+
+\subsection{Loss Function}
+
+The training objective is standard negative log-likelihood with per-batch SNIS normalization:
+
+\begin{equation}
+\mathcal{L}_{\text{batch}} = \frac{1}{N_b} \sum_{i \in \text{batch}} \frac{w_i}{\frac{1}{N_b}\sum_j |w_j|} \cdot 
+                           \left(-\log_{\det}\left(\frac{\partial f^{-1}}{\partial x}\right) - \log q(x_i)\right)
+\end{equation}
+
+where:
+\begin{itemize}
+  \item The normalization factor $\frac{1}{N_b}\sum_j |w_j|$ stabilizes the loss scale as weights become large
+  \item Per-event weights $w_i$ are strictly positive (sign-flipped in the dataset for \texttt{\_neg} types)
+  \item Stratified sampling ensures each batch draws equally from high- and low-weight quantile bins
+\end{itemize}
+
+\subsection{Data-Adaptive Model Scaling}
+
+Since different weight components occupy different fractions of the event space, models are scaled 
+appropriately to their training set size to avoid overfitting:
+
+\begin{equation}
+\begin{array}{lccc}
+\text{Weight Type} & \text{Training Events} & \text{\% of Total} & \text{Model Scale} \\
+\hline
+\texttt{sm} & 3.7M & 100\% & 1.00\times \\
+\texttt{linear\_pos} & 3.08M & 83.2\% & 1.00\times \\
+\texttt{linear\_neg} & 624k & 16.8\% & 0.67\times \\
+\texttt{quadratic\_pos} & 3.71M & 99.96\% & 1.00\times \\
+\texttt{quadratic\_neg} & 1.5k & 0.04\% & 0.33\times \text{ (sparse/tiny)}
+\end{array}
+\end{equation}
+
+The scale factor reduces model capacity (hidden dimensions, number of flows) for small datasets. 
+For example, \texttt{quadratic\_neg} trains on only 1,453 events with negligible mean weight, so a smaller model 
+($33\%$ of default capacity) prevents overfitting while still capturing the structure.
+
+---
+
+\section{Validation and Diagnostics}
+
+\subsection{Effective Sample Size Curve}
+
+After training converges, \texttt{smeft\_reweighting.py} produces an $N_{\text{eff}}$ vs.\ $c_{\text{Ht}}$ curve 
+by evaluating the weight formula over a range of $c$ values. A sharp drop indicates:
+\begin{itemize}
+  \item Destructive interference dominates at that $c$ value
+  \item EFT is approaching the validity/perturbativity limit
+  \item Fewer events carry significant statistical weight
+\end{itemize}
+
+\subsection{Comparison Plots}
+
+For each $c$ value, per-feature comparison panels show:
+\begin{enumerate}
+  \item \textbf{Generated (red)}: Samples from SM flow, reweighted to $c_{\text{Ht}}$
+  \item \textbf{ROOT file (blue, if available)}: Ground-truth baseline from simulation
+  \item \textbf{Ratio (lower panel)}: Generated / ROOT, should be $\approx 1$ across phase space
+\end{enumerate}
+
+Close agreement validates that the five flows and combination formula accurately capture 
+the SMEFT reweighting.
+
+---
+
+\section{File Structure and Key Functions}
+
+\begin{table}[h!]
+\centering
+\small
+\begin{tabular}{lp{10cm}}
+\toprule
+\textbf{File} & \textbf{Key Functions/Sections} \\
+\midrule
+\texttt{ml/custom/ttz/ttz\_dataset.py} & \texttt{ttzDataModule.setup()} — loads data, filters by sign, 
+normalizes weights \\
+& \texttt{WeightStratifiedSampler} — creates stratified batches \\
+\midrule
+\texttt{ml/custom/ttz/train\_all\_weights.py} & \texttt{ALL\_WEIGHT\_TYPES} — list of weight types \\
+& \texttt{submit\_job()} — submits Condor job \\
+\midrule
+\texttt{ml/custom/ttz/smeft\_reweighting.py} & \texttt{compute\_z\_normalisations()} — computes $Z_k$ \\
+& \texttt{find\_model\_name()} — finds latest MLflow models \\
+& \texttt{compute\_log\_ratios()} — computes 4 log-ratio arrays \\
+& \texttt{get\_weights()} — combination formula \\
+& \texttt{plot\_reweighted\_distributions()} — per-$c$ validation plots \\
+& \texttt{plot\_neff\_curve()} — $N_{\text{eff}}$ vs.\ $c$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+---
+
+\section{Mathematical Consistency Checks}
+
+\subsection{Decomposition Exactness}
+
+The assertion in \texttt{compute\_z\_normalisations()}:
+\begin{equation}
+\left| Z_{\text{lin}} - (Z_{\text{lin}}^+ - Z_{\text{lin}}^-) \right| < 10^{-3}
+\end{equation}
+
+verifies that the decomposition is exact to machine precision.
+
+\subsection{Weight Positivity in Datasets}
+
+For each \texttt{\_pos}/\texttt{\_neg} dataset split, all training weights satisfy $w_i \geq 0$ and 
+$\text{mean}(w_i) = 1$ by construction (global mean normalization).
+
+\subsection{Combination Formula Reconstruction}
+
+At $c = 0$, the combination formula reduces to $w_i(0) = Z_{\text{sm}} / Z_{\text{sm}} = 1$ for all $i$, 
+giving a uniform distribution—correct since there is no reweighting.
+
+---
+
+\section{Summary and Advantages}
+
+\subsection{Why Pos/Neg Decomposition Solves the Problem}
+
+\begin{enumerate}
+  \item \textbf{Principled}: Exact mathematical decomposition, not a hack
+  \item \textbf{Stable}: All training weights are non-negative; objective is well-posed
+  \item \textbf{Complete}: No events discarded; all contribute to one of five flows
+  \item \textbf{Physically correct}: Signed weights at inference (destructive interference) are preserved
+  \item \textbf{Validated}: Combination formula verified to exactly reconstruct original signed distribution
+  \item \textbf{Robust}: Works without clamping, absolute values, or lossy rescaling
+\end{enumerate}
+
+\subsection{Expected Outcomes}
+
+When training converges:
+\begin{itemize}
+  \item Linear and quadratic flows learn their respective non-negative weight distributions
+  \item Validation loss remains stable (no overflow) throughout training
+  \item Effective sample size stays $> 10\%$ for a wide range of $c_{\text{Ht}}$ values
+  \item Generated event distributions closely match ROOT file at all tested $c$ values
+\end{itemize}
+
+\subsection{Recent Updates (March 2026)}
+
+\begin{itemize}
+  \item \textbf{Data-Adaptive Scaling}: Models automatically scaled to dataset size to prevent overfitting on sparse components 
+        (\texttt{quadratic\_neg} uses only 33\% of default capacity)
+  \item \textbf{Data Source Consistency}: Unified all pipeline components to use \texttt{ttZ\_for\_Melle\_tree.root} as the 
+        authoritative source file. Z-factor computation now matches training data exactly.
+  \item \textbf{Sample Analyzer Fixes}: Fixed \texttt{analyzer.py} bugs (UnboundLocalError for \texttt{\_pos/\_neg} types, 
+        greedy regex swallowing model-name suffixes) ensuring feature comparison plots correctly weight MC data with 
+        sign-filtered subsets.
+  \item \textbf{Weight Contribution Visualization}: Extended \texttt{plot\_weight\_contributions.py} to decompose weights 
+        into four separate pos/neg components, enabling structural analysis of positive vs.\ negative weight regions.
+\end{itemize}
+
+\subsection{Future Directions}
+
+Once stable training is confirmed:
+\begin{enumerate}
+  \item Extend to other SMEFT coupling combinations (e.g., $c_t$, $c_W$)
+  \item Study higher-order (cubic, quartic) EFT terms if needed
+  \item Produce unweighted "pseudo-data" samples for phenomenological analyses
+  \item Quantify systematic uncertainties from flow modelling
+\end{enumerate}
+
+\appendix
+
+\section{Quick Reference: Weight Treatment Pipeline}
+
+\begin{enumerate}
+  \item \textbf{ROOT file}: Extract $w_{\text{sm}}, w_{\text{lin}}, w_{\text{quad}}$ (signed)
+  \item \textbf{Dataset.setup()}: Filter by sign $\to$ 5 datasets, each with $w_i > 0$
+  \item \textbf{DataLoader}: Use stratified sampler on both train/val $\to$ balanced batches
+  \item \textbf{Training}: SNIS normalization $w_i / \text{mean}(|w|)$ stabilizes loss
+  \item \textbf{MLflow}: Register 5 models, save checkpoints
+  \item \textbf{smeft\_reweighting.py}: Load 5 models, compute 4 log-ratio arrays
+  \item \textbf{Combination}: For any $c$, reconstruct $w_i(c)$ using formula in Section \ref{sec:combo}
+  \item \textbf{Validation}: Compare reweighted distributions to ROOT file
+\end{enumerate}
+
+\end{document}

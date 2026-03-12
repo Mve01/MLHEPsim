@@ -3,6 +3,7 @@
 #large files
 *.csv.gz
 *.pth
+*.npz
 
 # Generated figures
 *.png
@@ -87,6 +88,7 @@ __pypackages__/
 .venv
 env/
 venv/
+venv311/
 ENV/
 env.bak/
 venv.bak/

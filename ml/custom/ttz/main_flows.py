@@ -29,6 +29,107 @@ from ml.flows.models import (
 from ml.flows.trackers import FlowTracker as Tracker
 
 
+# ---------------------------------------------------------------------------
+# Data-adaptive model scaling
+# ---------------------------------------------------------------------------
+
+def _data_size_tier(n_train: int) -> tuple[str, float]:
+    """Return (tier_name, scale_factor) based on training set size.
+
+    Tiers are defined by the number of training events so that the model
+    capacity roughly scales with the available data, reducing overfitting
+    and wasted compute for the smaller _neg subsets.
+
+      large  (≥ 1 000 000)  →  scale 1.00  (full default config)
+      medium (≥   200 000)  →  scale 0.67
+      small  (≥    50 000)  →  scale 0.50
+      tiny   (         < 50 000)  →  scale 0.33
+    """
+    if n_train >= 1_000_000:
+        return "large", 1.0
+    elif n_train >= 200_000:
+        return "medium", 0.67
+    elif n_train >= 50_000:
+        return "small", 0.50
+    else:
+        return "tiny", 0.33
+
+
+def _scale_config_to_data(n_train: int, model_conf: dict, data_module) -> dict:
+    """Scale model architecture and batch size to match training set size.
+
+    Modifies ``data_module.dataloader_kwargs`` in-place to update batch_size.
+    Returns a *modified copy* of ``model_conf`` (plain dict, safe to mutate).
+
+    Scaled parameters
+    -----------------
+    - hidden_layer_dim / hidden_layer_mog_dim  (rounded to nearest 32)
+    - num_flows
+    - num_hidden_layers / num_hidden_layers_mog_net
+    - batch_size  (rounded to nearest 128)
+
+    Parameters left unchanged
+    -------------------------
+    - n_mixtures  (kept at default; changing base distribution complexity
+      has a larger quality impact than capacity)
+    - res_layers_in_block  (kept at 2; residual blocks are cheap)
+    - batchnorm_flow, conv1x1, activation, etc.
+    """
+    tier, scale = _data_size_tier(n_train)
+    model_conf = dict(model_conf)  # mutable copy so caller's dict is unchanged
+
+    if tier == "large":
+        logging.info(
+            f"Data scaling: {n_train} train events → tier '{tier}'. "
+            "Using default model config and batch size."
+        )
+        return model_conf
+
+    def _round32(x):
+        return max(64, round(x / 32) * 32)
+
+    def _round128(x):
+        return max(128, round(x / 128) * 128)
+
+    changes = {}
+
+    if "hidden_layer_dim" in model_conf:
+        original = model_conf["hidden_layer_dim"]
+        model_conf["hidden_layer_dim"] = _round32(original * scale)
+        changes["hidden_layer_dim"] = f"{original} → {model_conf['hidden_layer_dim']}"
+
+    if "hidden_layer_mog_dim" in model_conf:
+        original = model_conf["hidden_layer_mog_dim"]
+        model_conf["hidden_layer_mog_dim"] = _round32(original * scale)
+        changes["hidden_layer_mog_dim"] = f"{original} → {model_conf['hidden_layer_mog_dim']}"
+
+    if "num_flows" in model_conf:
+        original = model_conf["num_flows"]
+        model_conf["num_flows"] = max(2, round(original * scale))
+        changes["num_flows"] = f"{original} → {model_conf['num_flows']}"
+
+    if "num_hidden_layers" in model_conf:
+        original = model_conf["num_hidden_layers"]
+        model_conf["num_hidden_layers"] = max(2, round(original * scale))
+        changes["num_hidden_layers"] = f"{original} → {model_conf['num_hidden_layers']}"
+
+    if "num_hidden_layers_mog_net" in model_conf:
+        original = model_conf["num_hidden_layers_mog_net"]
+        model_conf["num_hidden_layers_mog_net"] = max(2, round(original * scale))
+        changes["num_hidden_layers_mog_net"] = f"{original} → {model_conf['num_hidden_layers_mog_net']}"
+
+    # Batch size: update the dataloader directly (model_conf doesn't own batch_size)
+    current_batch = data_module.dataloader_kwargs.get("batch_size", 1024)
+    scaled_batch = _round128(current_batch * scale)
+    data_module.dataloader_kwargs["batch_size"] = scaled_batch
+    changes["batch_size"] = f"{current_batch} → {scaled_batch}"
+
+    logging.info(
+        f"Data scaling: {n_train} train events → tier '{tier}' (scale={scale:.2f}). "
+        "Config changes: " + ", ".join(f"{k}: {v}" for k, v in changes.items())
+    )
+    return model_conf
+
 
 class PeriodicEpochLogger(Callback):
     """Logs training metrics every N epochs."""
@@ -118,7 +219,6 @@ def main(config):
         base_file_name="ttz", 
         list_data_features=data_conf["feature_selection"]["keep_names"],
         load_weights=data_conf.get("load_weights", False),  # Enable weight loading if specified
-        weight_type=data_conf.get("weight_type", "full"),  # SMEFT weight type: full/sm/linear/quadratic
         **data_conf["input_processing"]
     ) 
 
@@ -134,14 +234,27 @@ def main(config):
         train_split=data_conf["train_split"],
         val_split=data_conf["val_split"],
         use_weights=data_conf.get("use_weights", False),  # Enable weight usage in training
+        weight_type=data_conf.get("weight_type", "unknown"),
         **data_conf["dataloader_config"],
     )
 
+    # Run setup early so we know n_train before building the model.
+    # ttzDataModule.setup() is idempotent — Lightning's later call is a no-op.
+    data_module.setup("fit")
+    n_train = len(data_module.train)
+
+    # Convert Hydra DictConfig → plain dict so we can mutate it for scaling.
+    from omegaconf import OmegaConf
+    model_conf = OmegaConf.to_container(model_conf, resolve=True)
+
+    # Scale model architecture and batch_size to match this run's dataset size.
+    model_conf = _scale_config_to_data(n_train, model_conf, data_module)
+
     # model configuration
     logging.info(f"Setting up {model_conf['model_name']} model.")
-    
-    # Log key configuration parameters
-    logging.info(f"batch_size: {data_conf['dataloader_config']['batch_size']}")
+
+    # Log key configuration parameters (may differ from yaml if scaling was applied)
+    logging.info(f"batch_size: {data_module.dataloader_kwargs.get('batch_size')}")
     if 'num_flows' in model_conf:
         logging.info(f"num_flows: {model_conf['num_flows']}")
     if 'num_hidden_layers' in model_conf:
@@ -251,11 +364,12 @@ def main(config):
         logging.info(f"Resuming training from checkpoint: {ckpt_path}")
     trainer.fit(flow, data_module, ckpt_path=ckpt_path)
 
-    # Create detailed model name with date and n_data
+    # Create detailed model name with date, weight_type and n_data
     from datetime import datetime
     date_str = datetime.now().strftime("%Y%m%d")
     n_data_str = str(data_conf['feature_selection']['n_data']) if data_conf['feature_selection']['n_data'] is not None else "all"
-    detailed_model_name = f"{model_name}_{date_str}_n{n_data_str}"
+    weight_type_str = data_conf.get("weight_type", "full")
+    detailed_model_name = f"{model_name}_{date_str}_cHt5_{weight_type_str}_n{n_data_str}"
     
     # save model
     register_from_checkpoint(trainer, flow, model_name=detailed_model_name)

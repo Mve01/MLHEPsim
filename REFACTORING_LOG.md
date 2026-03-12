@@ -2948,3 +2948,1635 @@ weight_type: "full"       # Full SMEFT weight at cHt=5.0 (default)
 ```
 
 ---
+
+## Section 15: Multi-Weight Training Script and Improved Model Naming
+
+**Date**: March 3, 2026
+
+### Overview
+
+Added a script to submit one Condor training job per SMEFT weight type, and updated the model naming convention to include the weight type and cHt value for easier identification in the MLflow registry.
+
+---
+
+### 1. Added `train_all_weights.py`
+
+**File**: `ml/custom/ttz/train_all_weights.py` *(new)*
+
+Submits a separate Condor job for each weight type (`sm`, `linear`, `quadratic`, `full`) using the same `condorsub` command as `run_bash.sh`. Jobs run in parallel on the cluster.
+
+**Key features:**
+- Cleans up old Condor log/submission files before submitting (same as `run_bash.sh`)
+- One job per weight type, named `mafmademog_<weight_type>` (visible in `condor_q`)
+- Logs submission status to console and to a timestamped file in `logs/`
+- Supports `--weight-types` flag to submit a subset, and `--queue` to override the Condor queue
+- `--no-cleanup` flag to skip removal of old Condor files
+
+**Usage:**
+```bash
+# Submit all 4 weight types
+python ml/custom/ttz/train_all_weights.py
+
+# Submit a subset
+python ml/custom/ttz/train_all_weights.py --weight-types sm linear
+
+# Use a different Condor queue
+python ml/custom/ttz/train_all_weights.py --queue short
+```
+
+**Configuration** (top of file, mirrors `run_bash.sh`):
+```python
+CONDOR_JOB_PREFIX = "mafmademog"
+CONDOR_QUEUE      = "medium"
+CONDOR_N_GPUS     = 1
+CONDOR_MEMORY_MB  = 12000
+```
+
+Each Condor job runs:
+```bash
+python -m ml.custom.ttz.main_flows data_config.weight_type=<weight_type>
+```
+
+---
+
+### 2. Updated Model Naming in `main_flows.py`
+
+**File**: `ml/custom/ttz/main_flows.py`
+
+The registered MLflow model name now encodes the weight type and the cHt value, making models easily identifiable without loading them.
+
+**Before:**
+```
+MAFMADEMOG_flow_model_gauss_rank_20260303_nall
+```
+
+**After:**
+```
+MAFMADEMOG_flow_model_gauss_rank_20260303_cHt5_linear_nall
+MAFMADEMOG_flow_model_gauss_rank_20260303_cHt5_full_nall
+```
+
+**Code change** (near end of `main_flows.py`):
+```python
+# Before
+detailed_model_name = f"{model_name}_{date_str}_n{n_data_str}"
+
+# After
+weight_type_str = data_conf.get("weight_type", "full")
+detailed_model_name = f"{model_name}_{date_str}_cHt5_{weight_type_str}_n{n_data_str}"
+```
+
+---
+
+*End of refactoring log entry*
+
+## Section 16: SMEFT Analysis Sweep Script and Configurable Figure Output
+
+**Date**: March 3, 2026
+
+### Overview
+
+Added a Condor submission script to automatically run the analyzer for each trained SMEFT
+weight-type model and store the resulting figures in clearly named, dated subdirectories.
+Also updated the analyzer and run_analysis.py to support configurable output directories.
+
+---
+
+### 1. Added `run_smeft_analysis.py`
+
+**File**: `ml/custom/ttz/run_smeft_analysis.py` *(new)*
+
+Submits one Condor analysis job per SMEFT weight type (`sm`, `linear`, `quadratic`).
+For each weight type it:
+1. Searches the MLflow registry for the most recently registered model whose name
+   contains `cHt5_<weight_type>` (e.g. `cHt5_linear`)
+2. Creates a dated output directory: `sample_analyzer/figures/smeft_<weight_type>_<date>/`
+3. Submits a Condor job running `run_analysis.py --model-name <name> --figures-dir <dir>`
+
+**Usage:**
+```bash
+# Run analysis for all weight types
+python ml/custom/ttz/run_smeft_analysis.py
+
+# Run for a subset
+python ml/custom/ttz/run_smeft_analysis.py --weight-types sm linear
+
+# Use a different queue
+python ml/custom/ttz/run_smeft_analysis.py --queue medium
+```
+
+**Figure output structure:**
+```
+sample_analyzer/figures/
+  smeft_sm_20260303/
+    feature_comparison.png
+    feature_comparison_log.png
+  smeft_linear_20260303/
+    ...
+  smeft_quadratic_20260303/
+    ...
+```
+
+---
+
+### 2. Updated `run_analysis.py` — Added CLI Arguments
+
+**File**: `ml/custom/ttz/sample_analyzer/run_analysis.py`
+
+Added `argparse` support so the script can be driven externally (e.g. from Condor jobs).
+Existing usage with no arguments is fully backwards-compatible.
+
+**New arguments:**
+
+| Argument | Description |
+|---|---|
+| `--model-name` | MLflow model name to load. Defaults to `get_latest_ttz_model()`. |
+| `--figures-dir` | Directory to save figures. Defaults to `sample_analyzer/figures/`. |
+
+**Example:**
+```bash
+# Old usage (unchanged)
+python ml/custom/ttz/sample_analyzer/run_analysis.py
+
+# New usage (driven by run_smeft_analysis.py)
+python ml/custom/ttz/sample_analyzer/run_analysis.py \
+  --model-name MAFMADEMOG_flow_model_gauss_rank_20260303_cHt5_linear_nall \
+  --figures-dir ml/custom/ttz/sample_analyzer/figures/smeft_linear_20260303
+```
+
+---
+
+### 3. Updated `analyzer.py` — `plot_all()` Accepts `figures_dir`
+
+**File**: `ml/custom/ttz/sample_analyzer/analyzer.py`
+
+Added optional `figures_dir` parameter to `plot_all()` so the output location can be
+controlled externally. When `None`, the existing default (`sample_analyzer/figures/`) is used.
+
+**Before:**
+```python
+def plot_all(self, include_derived=True):
+    self.plot_feature_comparison(include_derived=include_derived)
+```
+
+**After:**
+```python
+def plot_all(self, include_derived=True, figures_dir=None):
+    if figures_dir is not None:
+        output_path = os.path.join(str(figures_dir), 'feature_comparison.png')
+    else:
+        output_path = None  # uses default
+    self.plot_feature_comparison(output_path=output_path, include_derived=include_derived)
+```
+
+---
+
+### Full Workflow
+
+```bash
+# Step 1 — train one model per weight type (parallel Condor jobs)
+python ml/custom/ttz/train_all_weights.py
+
+# Step 2 — once training is done, run analysis for all (parallel Condor jobs)
+python ml/custom/ttz/run_smeft_analysis.py
+```
+
+---
+
+*End of refactoring log entry*
+
+---
+
+## Section 17: Simplified `run_smeft_analysis.py` to Local Execution
+
+**Date**: 2026-03-03
+
+**Files changed**:
+- `ml/custom/ttz/run_smeft_analysis.py`
+
+---
+
+### Motivation
+
+The original `run_smeft_analysis.py` submitted analysis jobs via the Condor batch system
+(`condorsub`). This was over-engineered: the analyzer runs in seconds to minutes per model,
+well below the threshold that justifies cluster submission. The rule established is:
+**only jobs expected to take longer than ~1 hour go to Condor**.
+
+---
+
+### Changes
+
+#### 1. Removed all Condor infrastructure
+
+The following were removed entirely:
+
+| Removed | Reason |
+|---|---|
+| `glob` import | Only used for Condor file cleanup |
+| `CONDOR_*` constants | No longer submitting to cluster |
+| `VENV_ACTIVATE` constant | Not needed for local subprocess |
+| `CLEANUP_PATTERNS` constant | No Condor files to clean up |
+| `cleanup_old_condor_files()` function | Obsolete |
+| `build_job_command()` function | Was building the Condor shell command string |
+| `submit_job()` function | Was calling `condorsub` |
+| `--queue` CLI argument | No queue to select |
+| `--no-cleanup` CLI argument | No cleanup to skip |
+
+#### 2. Added `run_analysis()` — local subprocess
+
+Replaced `submit_job()` with a simple local runner:
+
+```python
+def run_analysis(weight_type: str, model_name: str, figures_dir: Path) -> bool:
+    cmd = [
+        sys.executable,
+        str(ANALYZER_DIR / "run_analysis.py"),
+        "--model-name", model_name,
+        "--figures-dir", str(figures_dir),
+    ]
+    result = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
+    return result.returncode == 0
+```
+
+The three weight types are processed sequentially in the main loop.
+
+#### 3. Fixed `PROJECT_ROOT` path resolution bug
+
+`parents[2]` resolved `ml/custom/ttz/run_smeft_analysis.py` to `ml/` instead of the
+repo root. Corrected to `parents[3]`, consistent with `train_all_weights.py`.
+
+**Before:**
+```python
+PROJECT_ROOT = Path(__file__).resolve().parents[2]   # wrong — resolves to ml/
+```
+
+**After:**
+```python
+PROJECT_ROOT = Path(__file__).resolve().parents[3]   # MLHEPsim root
+```
+
+---
+
+### Updated Workflow
+
+```bash
+# Step 1 — submit training jobs to Condor (long-running, ~hours per model)
+python ml/custom/ttz/train_all_weights.py
+
+# Monitor with:
+condor_q
+
+# Step 2 — once all models are registered in MLflow, run analysis locally
+python ml/custom/ttz/run_smeft_analysis.py
+```
+
+---
+
+*End of refactoring log entry*
+
+---
+
+## Section 18: Added `smeft_reweighting.py` — Importance Reweighting via Normalising Flows
+
+**Date:** 2025
+
+**File added:** `ml/custom/ttz/smeft_reweighting.py`
+
+**Theory reference:** `notes/smeft_importance_reweighting.tex`
+
+---
+
+### Motivation
+
+Once three separate normalising flows are trained (SM, linear, quadratic components of the
+SMEFT expansion at c_Ht = ±5), we can evaluate any EFT point without retraining. The key
+insight is importance reweighting in the flow's latent space:
+
+$$w_i(c) \propto Z_\text{sm} + c \cdot Z_\text{lin} \cdot r_\text{lin}(x_i) + c^2 \cdot Z_\text{quad} \cdot r_\text{quad}(x_i)$$
+
+where $r_k(x_i) = p_k(x_i) / p_\text{sm}(x_i)$ is the density ratio evaluated via the two
+respective flows.
+
+---
+
+### Pipeline
+
+| Step | Description |
+|------|-------------|
+| 1 | Search MLflow for registered models matching `cHt5_{weight_type}` |
+| 2 | Compute $Z_k$ normalisation constants from ROOT data file (3-jet filter) |
+| 3 | Sample $N$ events from the SM flow (`module_sm.model.sample(N)`) in preprocessed space |
+| 4 | Evaluate log $p_k(x)$ under all three flows for the same sample: `log_p = -estimate_density(x, exp=False, mean=False)` |
+| 5 | Compute log density ratios: `log_r_lin = log_p_lin - log_p_sm` |
+| 6 | Save ratios + samples to `figures/smeft_reweighting/density_ratios.npz` for reuse |
+| 7 | For each requested $c$, compute importance weights, $N_\text{eff}$, and produce comparison histograms |
+
+---
+
+### Key Technical Choices
+
+- `estimate_density(x, exp=False, mean=False)` returns **negative** log probability (NLL),
+  so `log_p = -estimate_density(...)`.
+- Sampling via `module_sm.model.sample(N)` returns data in preprocessed (gauss-rank scaled)
+  space — directly compatible with all three flows since they share the same training dataset
+  and scalers.
+- Physical-space samples obtained via `RescalingHandler(module_sm.selection, module_sm.scalers).inverse_transform(x_scaled)`.
+- Negative weights (unphysical, possible for large `|c|`) are clipped to 0 with a warning logged.
+
+---
+
+### CLI
+
+```bash
+# Full run (sample + encode + plot)
+python ml/custom/ttz/smeft_reweighting.py --n-samples 100000 --c-values -5 -2 -1 0 1 2 5
+
+# Reuse previously saved ratios (fast — skips model inference)
+python ml/custom/ttz/smeft_reweighting.py --load-ratios --c-values -5 0 5
+```
+
+---
+
+### Outputs
+
+| File | Description |
+|------|-------------|
+| `figures/smeft_reweighting/density_ratios.npz` | `log_r_lin`, `log_r_quad`, `x_scaled` arrays |
+| `figures/smeft_reweighting/neff_vs_c.png` | $N_\text{eff}/N$ as a function of $c_{Ht}$ |
+| `figures/smeft_reweighting/reweighted_c{VALUE}.png` | 15-feature comparison plots at each $c$ |
+| `logs/smeft_reweighting_YYYYMMDD_HHMMSS.log` | Full run log |
+
+---
+
+*End of refactoring log entry*
+
+---
+
+## Section 19: Remove 3-jet Filter from `smeft_reweighting.py`
+
+**Date:** 2026-03-04
+**File:** `ml/custom/ttz/smeft_reweighting.py`
+
+### Change
+
+The 3-jet filter in `compute_z_normalisations()` was removed. It had been copied from `plot_weight_contributions.py` where it was used as a temporary diagnostic, but it is not appropriate here — the Z_k normalisation constants should be computed over all events in the dataset.
+
+**Before:**
+```python
+data = tree.arrays(['eventWeight', 'smeft_weights', 'Jet_Pt'], library='np')
+
+# 3-jet filter
+mask = np.array([len(j) for j in data['Jet_Pt']]) == 3
+log.info(f"  3-jet filter: {mask.sum()} / {len(mask)} events kept")
+
+w_sm  = data['eventWeight'][mask]
+smeft = np.stack(data['smeft_weights'][mask])
+```
+
+**After:**
+```python
+data = tree.arrays(['eventWeight', 'smeft_weights'], library='np')
+
+log.info(f"  Total events: {len(data['eventWeight'])}")
+
+w_sm  = data['eventWeight']
+smeft = np.stack(data['smeft_weights'])
+```
+
+---
+
+*End of refactoring log entry*
+
+---
+
+## Section 20: Correct Negative Weight Handling and N_eff in `smeft_reweighting.py`
+
+**Date:** 2026-03-04
+**File:** `ml/custom/ttz/smeft_reweighting.py`
+
+### Motivation
+
+Per-event importance weights $w_i(c) \propto Z_\text{sm} + c Z_\text{lin} e^{r_{\text{lin},i}} + c^2 Z_\text{quad} e^{r_{\text{quad},i}}$ can legitimately be negative. This reflects destructive interference between the SM and EFT amplitudes in that region of phase space. Clipping negative weights to zero would bias distributions and is physically wrong. Only the total cross section (sum over all events) must remain positive for a valid EFT point.
+
+### Change 1 — `get_weights`: remove negative-weight clipping
+
+**Before:**
+```python
+neg = (unnorm < 0).sum()
+if neg:
+    log.warning(f"  c={c}: {neg} negative weights clipped to 0")
+    unnorm = np.clip(unnorm, 0.0, None)
+
+return unnorm / unnorm.sum()
+```
+
+**After:**
+```python
+neg = (unnorm < 0).sum()
+if neg:
+    log.info(f"  c={c:+.1f}: {neg} events have negative weights (destructive interference)")
+
+total = unnorm.sum()
+if total <= 0:
+    log.warning(f"  c={c:+.1f}: total weight sum = {total:.4f} <= 0 — EFT may be outside validity range")
+
+return unnorm / total
+```
+
+### Change 2 — `effective_sample_size`: use signed-weight estimator
+
+The previous estimator $N_\text{eff} = 1/\sum w_i^2$ assumes non-negative weights and is misleading when cancellations occur. Replaced with:
+
+$$N_\text{eff} / N = \frac{|\sum w_i|}{\sum |w_i|}$$
+
+which measures the fraction of the absolute weight budget that survives after destructive interference.
+
+**Before:**
+```python
+def effective_sample_size(weights: np.ndarray) -> float:
+    """N_eff = (Σw)² / Σw²   (already normalised → N_eff = 1 / Σw²)"""
+    return 1.0 / float(np.sum(weights**2))
+```
+
+**After:**
+```python
+def effective_sample_size(weights: np.ndarray) -> float:
+    """Returns fraction 0-1: |Σw| / Σ|w|"""
+    return float(np.abs(weights.sum())) / float(np.abs(weights).sum())
+```
+
+Plot labels and the $N_\text{eff}$ curve updated accordingly (function now returns a fraction directly).
+
+---
+
+*End of refactoring log entry*
+
+---
+
+## Section 21: Fix CUDA/CPU Device Mismatch in `load_module` (`smeft_reweighting.py`)
+
+**Date:** 2026-03-05
+**File:** `ml/custom/ttz/smeft_reweighting.py`
+
+### Bug
+
+Running `smeft_reweighting.py` crashed during sampling with:
+
+```
+RuntimeError: Expected all tensors to be on the same device, but found at least
+two devices, cpu and cuda:0! (when checking argument for argument mat1 in method
+wrapper_CUDA_addmm)
+```
+
+### Root Cause
+
+`AutoregressiveNormalizingFlow` stores its target device as a plain Python attribute (`self.device`), not as a PyTorch module buffer. When a checkpoint is saved from a GPU training run, `self.device = 'cuda:0'` is frozen into the state dict. Loading with `fetch_registered_module(..., device="cpu")` moves the model *parameters* to CPU but does not update this plain attribute. As a result `sample()` creates its dummy input tensor on `cuda:0` while the MADE weights are on CPU, causing the mismatch.
+
+### Fix
+
+After loading, explicitly call `.cpu()` on the full Lightning module and then patch the inner flow's `device` attribute:
+
+**Before:**
+```python
+def load_module(model_name: str):
+    from ml.common.utils.register_model import fetch_registered_module
+    mlflow.set_tracking_uri(...)
+    module = fetch_registered_module(model_name, model_version=-1, device="cpu")
+    module.model.eval()
+    return module
+```
+
+**After:**
+```python
+def load_module(model_name: str):
+    import torch
+    from ml.common.utils.register_model import fetch_registered_module
+    mlflow.set_tracking_uri(...)
+    module = fetch_registered_module(model_name, model_version=-1, device="cpu")
+    module = module.cpu()
+    module.model.eval()
+
+    inner_flow = module.model.model
+    if hasattr(inner_flow, 'device'):
+        inner_flow.device = torch.device('cpu')
+
+    return module
+```
+
+---
+
+*End of refactoring log entry*
+
+---
+
+## Section 22: Fix `MADEMOG.estimate_density` Incompatibility and Patch `MADEMOG.device` (`smeft_reweighting.py`)
+
+**Date:** 2026-03-05
+**File:** `ml/custom/ttz/smeft_reweighting.py`
+
+### Bug
+
+```
+TypeError: MADEMOG.estimate_density() got an unexpected keyword argument 'chunks'
+```
+
+`module.model` resolves to a `MADEMOG` instance, not a `BaseFlowModel`. `MADEMOG.estimate_density` has no `chunks` parameter (unlike `BaseFlowModel.estimate_density`).
+
+### Fix 1 — `compute_log_probs`: manual batching
+
+Removed the `chunks=` kwarg. Replaced with an explicit loop that slices `x_scaled` into batches of `batch_size` events, calls `estimate_density` on each slice, and concatenates the NLL arrays.
+
+### Fix 2 — `load_module`: also patch `MADEMOG.device`
+
+`MADEMOG.estimate_density` moves input tensors with `data_points.to(self.device)`. Like `AutoregressiveNormalizingFlow.device`, this `self.device` is a plain Python attribute serialised as `cuda:0` and not updated by `.cpu()`. The device patch in `load_module` is extended to cover both:
+
+```python
+cpu = torch.device('cpu')
+if hasattr(module.model, 'device'):
+    module.model.device = cpu            # MADEMOG
+inner_flow = module.model.model
+if hasattr(inner_flow, 'device'):
+    inner_flow.device = cpu              # AutoregressiveNormalizingFlow
+```
+
+---
+
+*End of refactoring log entry*
+
+---
+
+## Section 23: Fix `(N,1)` Shape from `estimate_density` in `smeft_reweighting.py`
+
+**Date:** 2026-03-05
+**File:** `ml/custom/ttz/smeft_reweighting.py`
+
+### Bug
+
+```
+ValueError: weights should have the same shape as a.
+```
+
+Raised in `np.histogram(feat_data, bins=edges, weights=w, density=True)` where `feat_data.shape = (N,)` but `w.shape = (N, 1)`.
+
+### Root Cause
+
+`MADEMOGModel.forward` computes `self.log_prob` with `keepdim=True`:
+
+```python
+self.log_prob = torch.sum(
+    torch.logsumexp(..., dim=1),
+    dim=-1,
+    keepdim=True,   # ← produces (N, 1) not (N,)
+)
+```
+
+`MADEMOG.estimate_density(mean=False)` therefore returns a `(N, 1)` array. After concatenation across batches, `nll` was `(N, 1)`, propagating through `log_p`, `log_r_lin`, `log_r_quad`, and `w` — all `(N, 1)` while `feat_data` remained `(N,)`.
+
+### Fix
+
+Squeeze the concatenated NLL array in `compute_log_probs` to ensure shape `(N,)`:
+
+```python
+nll = np.concatenate(nll_parts).squeeze()   # (N,1) → (N,) due to keepdim=True in MADEMOGModel
+```
+
+---
+
+*End of refactoring log entry*
+
+---
+
+## Section 24: Improve Distribution Plots in `smeft_reweighting.py`
+
+**Date:** 2026-03-05
+**File:** `ml/custom/ttz/smeft_reweighting.py`
+
+### Changes to `plot_reweighted_distributions`
+
+**1. SM visibility fix**
+
+Previously both SM and SMEFT were drawn as `step` lines with the same weight. When the SMEFT reweighting concentrates probability into a narrow region the SMEFT peak is much taller, making the SM distribution appear invisible (it was plotted correctly but simply dwarfed). SM is now drawn as a filled area (`fill_between`) with an outline, ensuring it remains visible regardless of the SMEFT peak height.
+
+**2. Ratio panels**
+
+Each feature panel now has a bottom sub-panel showing SMEFT / SM per bin:
+- Bins where `hist_sm = 0` are skipped (`nan`) to avoid divide-by-zero artefacts.
+- The y-range is clipped to the 2nd–98th percentile of finite ratio values so a single outlier bin does not collapse the visible range.
+- A reference line at ratio = 1 is drawn in blue.
+
+**3. Title placement**
+
+Replaced `suptitle(y=0.998)` with a `GridSpec(top=0.92)` layout so the figure title no longer overlaps the top row of plots.
+
+---
+
+*End of refactoring log entry*
+
+---
+
+## Section 25: Ratio Y-Range Fix and Derived Features in `smeft_reweighting.py`
+
+**Date:** 2026-03-05
+**File:** `ml/custom/ttz/smeft_reweighting.py`
+
+### Change 1 — Ratio panel y-range uses full extent
+
+**Before:** y-range was clipped to the 2nd–98th percentile of finite ratio values, which could hide genuine large deviations in the tails.
+
+**After:** y-range spans the full `[min, max]` of all finite ratio values plus a 10% margin on each side:
+
+```python
+r_lo, r_hi = finite.min(), finite.max()
+margin = 0.1 * max(r_hi - r_lo, 0.1)
+ax_ratio.set_ylim(r_lo - margin, r_hi + margin)
+```
+
+### Change 2 — Derived higher-order features added to plots
+
+Added `compute_derived_features(x_phys)` which reconstructs 7 higher-order kinematic quantities from the 15 base features (in physical space) and appends them as extra columns for plotting only (the flow model is not retrained).
+
+| Feature | Derivation |
+|---|---|
+| `Z_pt`, `Z_eta`, `Z_mass` | 4-vector sum of two massless Z-leptons |
+| `Z_deltaR` | $\sqrt{\Delta\eta^2 + \Delta\phi^2}$ between Z-leptons |
+| `W_boson_pt` | 2D vector sum W-lepton + MET |
+| `top_pt` | 2D transverse vector sum b-jet + W-lepton + MET |
+| `Z_over_top_pt` | `Z_pt / top_pt` |
+
+`plot_reweighted_distributions` now accepts an optional `feature_names` argument so the extra columns are labelled correctly. Total features in output plots: **22** (15 base + 7 derived).
+
+---
+
+*End of refactoring log entry*
+
+---
+
+## Section 26: Fix Layout Overlap, Whitespace, and Histogram Normalisation Bug (`smeft_reweighting.py`)
+
+**Date:** 2026-03-05
+**File:** `ml/custom/ttz/smeft_reweighting.py`
+
+### Change 1 — Layout: remove top whitespace and fix label overlap
+
+- `hspace` increased from `0.08` → `0.45`. With a 3:1 main-to-ratio height ratio, the very tight spacing caused ratio x-axis labels to overlap with the title of the row below.
+- `top=0.97` and `suptitle(y=0.995)` introduced so the suptitle sits flush against the plot area, eliminating the large blank gap at the top of saved PNGs.
+- Figure height increased by `0.8` inches to prevent overall vertical crowding at the bottom.
+
+### Change 2 — Histogram normalisation bug (flat ratio fix)
+
+The previous code called `np.histogram(..., density=True)` on both the SM and SMEFT histograms. When `density=True` is used numpy divides by `sum(weights) * dx`. For the SM histogram that denominator is `N * dx`; for the weighted histogram it is `sum(w) * dx = 1 * dx` (since `w` is already normalised to sum to 1). The two histograms therefore had implicit scale factors that differed by `N`, making their ratio numerically `~1 / N ≈ 0` for the SM—and thus the ratio panel showed a flat line of 1 regardless of the actual reweighting.
+
+**Fix:** compute raw bin counts without `density=True` and normalise manually with a consistent scale factor:
+
+```python
+counts_sm, edges = np.histogram(feat_data, bins=bins, range=(x_min, x_max))
+hist_sm = counts_sm / (N * dx)        # unweighted PDF: integrates to 1
+
+counts_c, _ = np.histogram(feat_data, bins=edges, weights=w)
+hist_c = counts_c / dx                # weighted PDF: sum(w)*dx = 1*dx → integrates to 1
+```
+
+### Change 3 — Diagnostic logging before plotting
+
+Added log lines reporting `std`, `min`, and `max` of `log_r_lin`, `log_r_quad`, and the per-`c` weight array, making it easy to detect degenerate cases (e.g. all three models converging to the same density).
+
+---
+
+*End of refactoring log entry*
+
+---
+
+## Section 27: Fix Training Bug — Weights Never Applied to Loss (`train_all_weights.py`)
+
+**Date:** 2026-03-05
+**File:** `ml/custom/ttz/train_all_weights.py`
+
+### Problem
+
+All three normalising-flow models (SM, linear, quadratic) were trained with **identical unweighted NLL**, causing them to converge to the same density estimate. Evidence:
+
+```
+[sm]        log p: mean=-12.346, std=2.975
+[linear]    log p: mean=-12.346, std=2.975
+[quadratic] log p: mean=-12.346, std=2.975
+log_r_lin std=0.0000   (all ratios exactly zero)
+log_r_quad std=0.0000
+```
+
+### Root Cause
+
+Three flags gate the weight-application pipeline, all defaulting to `False` at the time the original models were trained:
+
+| Flag | Location | Effect when `False` |
+|---|---|---|
+| `load_weights` | `ttzNpyProcessor.process_ttz_dataset` | weight column never written to `.npy` files |
+| `use_weights` | `ttzDataModule.setup` | weights never extracted from data, not passed to DataLoader |
+| `use_sm_weights` | `MADEMOG.training_step` | `weighted_losses = weights * sample_losses` line skipped; plain mean NLL used |
+
+`train_all_weights.py::build_job_command` was only passing:
+```
+python -m ml.custom.ttz.main_flows data_config.weight_type={weight_type}
+```
+
+None of the three flags were activated, so all jobs trained the same vanilla flow regardless of `weight_type`.
+
+### Fix
+
+`build_job_command` now passes all three flags explicitly as Hydra CLI overrides:
+
+```python
+# Before
+cmd = (
+    f"python -m ml.custom.ttz.main_flows "
+    f"data_config.weight_type={weight_type}"
+)
+
+# After
+cmd = (
+    f"python -m ml.custom.ttz.main_flows "
+    f"data_config.weight_type={weight_type} "
+    f"data_config.load_weights=True "
+    f"data_config.use_weights=True "
+    f"training_config.use_sm_weights=True"
+)
+```
+
+The Hydra key paths were verified against the YAML defaults in:
+- `ml/custom/ttz/config/flows/data_config.yaml` — `load_weights`, `use_weights`, `weight_type` are top-level keys under `data_config:`
+- `ml/custom/ttz/config/flows/training_config.yaml` — `use_sm_weights` is a top-level key under `training_config:`
+
+Note: the YAML defaults were already updated to `true` for all three flags, so the CLI overrides are now redundant but provide an explicit safety net against future yaml changes.
+
+### Impact
+
+The three models must be **retrained** with these flags active. After retraining, re-run `smeft_reweighting.py` to regenerate density ratios; the stale `density_ratios.npz` was already deleted and a degenerate-ratio guard was added to prevent silently using bad cached results.
+
+---
+
+*End of refactoring log entry*
+
+---
+
+## Section 28: Fix `ttz_dataset.py` Weight Logging — Hard-coded `cHt=5.0` Message
+
+**Date:** 2026-03-05
+**File:** `ml/custom/ttz/ttz_dataset.py`
+
+### Change
+
+Both log lines in `ttzDataModule.setup` were hard-coded to `"cHt=5.0 weights"` and `"cHt weights"` regardless of the actual `weight_type` being used. This made it impossible to distinguish which weight component a given training job was using from the logs alone.
+
+Added `weight_type="unknown"` parameter to `ttzDataModule.__init__` and threaded the value through from `main_flows.py`. Log lines now read:
+
+```
+Extracted weight_type='linear' weights from data. ...
+Normalized 'linear' weights: original mean=...
+```
+
+`main_flows.py` was updated to pass `weight_type=data_conf.get("weight_type", "unknown")` to the `ttzDataModule` constructor.
+
+---
+
+*End of refactoring log entry*
+
+---
+
+## Section 29: Refactor Weight Storage — Single Multi-Column `.npy` File
+
+**Date:** 2026-03-05
+**Files:** `ml/custom/ttz/process_ttz_dataset.py`, `ml/custom/ttz/ttz_dataset.py`, `ml/custom/ttz/main_flows.py`
+
+### Problem
+
+`ttzNpyProcessor` used a single `weight_type` parameter to decide which weight column to write into `ttz.npy`. All three training jobs (sm, linear, quadratic) shared the same filename. When any one job ran first and wrote its single weight column, the other jobs found the file already existing and loaded it unchanged — training on the wrong (or identical) weights. This caused all three models to converge to byte-for-byte identical checkpoints (confirmed by MD5 hash).
+
+### Design
+
+Store all four weight decomposition components in a single file `ttz_weights.npy` (19 columns: 15 features + 4 weights). Each training job reads the same file and selects the appropriate column at load time:
+
+| Column | Name | Formula |
+|--------|------|---------|
+| 15 | `sm` | `eventWeight` |
+| 16 | `linear` | `(w_plus − w_minus) / 10.0` |
+| 17 | `quadratic` | `(w_plus + w_minus − 2·w_sm) / 50.0` |
+| 18 | `full` | `w_plus` (full SMEFT weight at cHt=5.0) |
+
+### Changes
+
+**`process_ttz_dataset.py`**:
+- Removed `weight_type` constructor parameter — no longer needed for file generation
+- When `load_weights=True`, `base_file_name` is set to `ttz_weights` so the output file is `ttz_weights.npy`, distinct from the unweighted `ttz.npy`
+- All 4 weight columns are always computed and appended in one ROOT-file read: `w_sm`, `w_linear`, `w_quad`, `w_full`
+- `self.features["colnames"]` now registers all four weight keys (`cHt_weight_sm`, `cHt_weight_linear`, `cHt_weight_quadratic`, `cHt_weight_full`)
+
+**`ttz_dataset.py`**:
+- Added module-level constant `WEIGHT_COLS = {"sm": 15, "linear": 16, "quadratic": 17, "full": 18}`
+- `ttzDataModule.setup` now checks for 19 columns (not 16), selects the column matching `self.weight_type`, and strips all 4 weight columns from the feature matrix before training
+- Updated warning message to reflect the new expected shape
+
+**`main_flows.py`**:
+- Removed `weight_type` from `ttzNpyProcessor` constructor call (parameter no longer exists)
+- `weight_type` is still passed to `ttzDataModule` for column selection and model naming
+
+### Impact
+
+The ROOT file is read exactly once to produce `ttz_weights.npy`. All three training jobs reuse it. Delete `ttz_weights.npy` to force regeneration (e.g. if weight formulae change). The stale `ttz_weights.npy` was cleared before resubmitting training.
+
+---
+
+*End of refactoring log entry*
+
+---
+
+## Section 30: Add Ground Truth Comparison to Reweighting Plots (`smeft_reweighting.py`)
+
+**Date:** 2026-03-05
+**File:** `ml/custom/ttz/smeft_reweighting.py`
+
+### Purpose
+
+Compare flow-generated samples to ROOT file ground truth to visually assess model performance across all distributions and SMEFT weight decomposition components.
+
+### Changes
+
+**New function `load_root_features_and_weights()`**:
+- Loads 15 physics features (same order as training) from the ROOT file
+- Computes weight decomposition: `sm` (eventWeight), `linear`, `quadratic`, `full`
+- Returns features and all 4 weight types for later selection
+- Enables recomputation of SMEFT weights for any c value on the fly
+
+**Updated `plot_reweighted_distributions()`**:
+- Added optional parameters: `x_root` (ROOT features) and `w_decomp` (ROOT weight dict)
+- When both are provided, shows three curves per feature:
+  - **Blue fill + line**: SM flow samples (unweighted)
+  - **Red line**: Generated + reweighted samples
+  - **Green dashed line**: ROOT file weighted samples (ground truth)
+- Ratio panel shows:
+  - If ROOT data supplied: **ROOT / generated** (validates model accuracy)
+  - Otherwise: **generated / SM** (legacy comparison)
+- Updated docstring to document the new comparison mode
+
+**Modified `main()`**:
+- Loads ROOT file features and decomposed weights before plotting
+- Computes derived features for ROOT data (same as for generated)
+- Passes ROOT data to `plot_reweighted_distributions()`
+
+### Usage
+
+Run normally:
+```bash
+python ml/custom/ttz/smeft_reweighting.py
+```
+
+Plots now show ROOT/generated ratio in the lower panel. A value near 1.0 indicates the flow accurately learned the distribution for that feature and weight type.
+
+### Impact
+
+Users can visually validate model generalization:
+- **Ratio ≈ 1**: flow learned the distribution well
+- **Ratio drifts > 1.5 or < 0.67**: flow may have issues or regularization problems
+- Can identify features where model struggles (e.g., high-mass regions)
+
+---
+
+*End of refactoring log entry*
+
+## Entry 31: Ragged SMEFT Arrays Support
+
+**Date:** 2026-03-06
+**File:** `ml/custom/ttz/process_ttz_dataset.py`
+
+### Problem
+
+When switching to the new ROOT data file (`ttZ_for_Melle_tree.root`), the `process_ttz_dataset.py` script failed with:
+```
+ValueError: all input arrays must have the same shape
+```
+
+at the line `smeft = np.stack(data['smeft_weights'])`. This occurred because the new file stores `smeft_weights` as **ragged arrays** — each event can have a different number of weight values, violating the assumption that all events have uniform structure.
+
+### Root Cause
+
+ROOT files can store variable-length arrays (jagged/ragged arrays) where each entry in a column can have different lengths. The old data file had uniform-length weight arrays, but the new file does not. `np.stack()` requires all input arrays to have identical shapes, so it fails on ragged data like `[array(1032,), array(1032,), ..., array(987,), ...]`.
+
+### Solution Implemented
+
+Updated the weight extraction logic in `create_dataset()` (lines 223-249):
+
+1. **Iterate through each weight array** individually instead of using `np.stack()` directly
+2. **Validate minimum size**: Check if each weight array has at least 125 elements (need indices 0–124)
+3. **Pad if necessary**: For any event with fewer than 125 weight values, pad with zeros to reach 125
+4. **Convert variants**: Handle both numpy arrays and scalar values by converting to `np.atleast_1d()`
+5. **Stack after standardization**: Only after all arrays are guaranteed to be the same shape (125 or more elements), perform `np.stack()`
+
+**Code addition:**
+```python
+# Handle ragged arrays: ensure all weight arrays have minimum 125 elements
+smeft_raw = data['smeft_weights']
+smeft_arrays = []
+for w in smeft_raw:
+    if hasattr(w, 'shape'):
+        # Already a numpy array
+        if w.shape[0] < 125:
+            logging.warning(f"  Warning: Event has only {w.shape[0]} weights, need at least 125")
+            # Pad with zeros if too short
+            w = np.pad(w, (0, 125 - w.shape[0]), mode='constant', constant_values=0)
+        smeft_arrays.append(w)
+    else:
+        # Single value or other type - convert to array with padding
+        w_arr = np.atleast_1d(w)
+        if len(w_arr) < 125:
+            w_arr = np.pad(w_arr, (0, 125 - len(w_arr)), mode='constant', constant_values=0)
+        smeft_arrays.append(w_arr)
+
+# Stack into (N, 125+) array
+smeft = np.stack(smeft_arrays)
+```
+
+### Impact
+
+- ✅ Enables use of new ROOT data file (`ttZ_for_Melle_tree.root`) with ~6× more events
+- ✅ Supports any future ROOT files with ragged weight arrays
+- ✅ Logs warnings for undersized weight arrays (aids debugging)
+- ℹ️ Padding with zeros doesn't affect physics since indices 122 and 124 are always checked
+
+### Testing
+
+Training jobs with `ttZ_for_Melle_tree.root` now proceed past the weight loading step. No functional change to existing behavior with uniform-length arrays.
+
+---
+
+## Entry 32: Ragged SMEFT Array Fix — Replaced with Awkward-Array Approach
+
+**Date:** 2026-03-06
+**File:** `ml/custom/ttz/process_ttz_dataset.py`
+
+### Problem
+
+The per-event loop fix introduced in Entry 31 still used `np.stack()` at the end, which fails whenever any two events have arrays of different lengths (e.g. 1032 vs 987). Additionally, looping over 3.7M events in Python is extremely slow.
+
+### Solution
+
+Load `smeft_weights` separately using `library="ak"` (awkward arrays), which handles ragged arrays natively. Use awkward's column-slice syntax to extract only the two needed indices:
+
+```python
+smeft_ak = tree_ttz.arrays(['smeft_weights'], library="ak")['smeft_weights']
+w_plus  = ak.to_numpy(smeft_ak[:, 124]).astype(np.float32)  # cHt = +5.0
+w_minus = ak.to_numpy(smeft_ak[:, 122]).astype(np.float32)  # cHt = -5.0
+```
+
+This avoids `np.stack()` entirely — awkward handles the ragged structure internally and produces flat numpy arrays directly. All other branches are still loaded via `library="np"` as before.
+
+### Impact
+
+- ✅ Correctly handles ragged `smeft_weights` arrays across all 3.7M events
+- ✅ Vectorized — no Python-level event loop
+- ✅ Memory efficient — only extracts 2 indices out of 1032, discards the rest
+
+---
+
+## Entry 33: Plot X-Axis Labels on Every Row
+
+**Date:** 2026-03-06
+**File:** `ml/custom/ttz/smeft_reweighting.py`
+
+### Change
+
+Previously, x-axis tick numbers and feature name labels on the ratio panels were only shown on the bottom row to reduce clutter. User requested labels on every row for readability.
+
+Removed the `if row == n_rows - 1` conditional and unconditionally set:
+```python
+ax_ratio.set_xlabel(feat, fontsize=8)
+ax_ratio.tick_params(labelbottom=True, labelsize=8)
+```
+
+Also updated the ratio direction label from `ROOT(c) / Generated` to `Generated / ROOT(c)` (Entry matches earlier change in same session).
+
+---
+
+## Entry 34: Training Instability Fix — Negative Weight Clamping + Per-Batch Normalisation
+
+**Date:** 2026-03-06
+**Files:** `ml/custom/ttz/ttz_dataset.py`, `ml/flows/models/made_mog.py`
+
+### Problem
+
+Both the linear and quadratic flow training runs failed:
+
+- **Linear**: NaN loss from epoch 0. The normalised linear weights had `max=82.7×mean`. A single batch dominated by a few extreme-weight events caused the MOG log-prob to leave the finite range in the very first forward pass.
+- **Quadratic**: Loss explosion after epoch 5 (reaching ~10²⁵), despite `gradient_clip_val=1.0`. The gradient clipping caps gradient *magnitude* but not the loss value itself — a batch with extreme-weight events still causes catastrophic optimizer steps.
+
+Root cause: the SMEFT decomposition weight values `w_linear = (w⁺ − w⁻)/10` and `w_quadratic = (w⁺ + w⁻ − 2w_sm)/50` have very long tails (max ~80–100×mean) and a small negative tail (~0.3%). Feeding these directly as importance weights without any batch-level control makes training numerically unstable.
+
+### Solution
+
+Two targeted fixes:
+
+**1. Clamp negative weights to 0 (`ttz_dataset.py`)**
+
+Negative decomposition components represent destructive SMEFT interference. They are physically meaningful but *mathematically ill-posed* as importance weights for a normalizing flow — a probability density is always non-negative. Negative weights would instruct the flow to decrease its density at those events, which is incoherent. Since negatives are only ~0.3% of events with small magnitude (min ≈ −0.13 vs mean=1.0), the physics impact is negligible.
+
+```python
+n_neg = int((self.weights < 0).sum())
+if n_neg:
+    logging.warning(f"  Clamping {n_neg} negative '{self.weight_type}' weights to 0 ({100*n_neg/len(self.weights):.3f}%)")
+    self.weights = np.clip(self.weights, 0.0, None)
+```
+
+**2. Per-batch weight normalisation (`made_mog.py` training_step)**
+
+Instead of global clipping (which would distort physics at high momentum transfer where SMEFT effects are largest), weights are normalised *per batch* by dividing by their batch mean before computing the weighted loss:
+
+```python
+batch_mean = weights.mean().clamp(min=1e-8)
+weights = weights / batch_mean
+```
+
+This preserves the relative ordering within each batch (extreme-weight events still pull the gradient harder), but prevents any batch from having a 80×-inflated effective learning rate. The global weight distribution (used for Z normalization constants in `smeft_reweighting.py`) is untouched.
+
+**3. Removed global p99 clip (`ttz_dataset.py`)**
+
+The previously introduced p99 clipping was removed since per-batch normalisation is a strictly better approach: it handles numerical stability without discarding any physics information from the high-weight events.
+
+The `ttz_dataset.py` now logs weight percentiles (p99, p99.9) instead of modifying them.
+
+### Impact
+
+- ✅ Fixes NaN loss in linear training
+- ✅ Fixes loss explosion in quadratic training
+- ✅ Does not distort physics at high pT / high-weight events
+- ✅ Negative weights (destructive interference) are excluded — consistent with flow probability semantics
+
+---
+
+## Entry 35: Signed Weights + Stratified Batching — Stable Training Without Physics Distortion
+
+**Date:** 2026-03-06
+**Files:** `ml/custom/ttz/ttz_dataset.py`, `ml/flows/models/made_mog.py`
+
+### Problem
+
+Weight-clipping tests (`test_weight_clipping.py`) revealed that *any* modification to
+the raw weights visibly distorts the physics distributions:
+
+- **Linear**: has ~16.7% negative-weight events. Clamping negatives to 0 *or* taking
+  absolute values both produce significant histogram deviations (ratio panels clearly
+  drift from 1). These negatives are physically meaningful — destructive SMEFT
+  interference where increasing $c_{Ht}$ reduces the cross-section in that phase-space
+  region.
+- **Quadratic**: effectively no negatives (<10/500k), but has a very long positive tail
+  (max ~460×mean). Capping at 5, 10, or even 20 still distorts the high-weight tail
+  where EFT effects are largest.
+
+The Entry 34 approach (clamp negatives to 0 + per-batch `mean(w)` normalisation) was
+therefore incorrect: it discards real physics in the linear case and does not fully solve
+the tail problem in the quadratic case.
+
+### Solution
+
+Three coordinated changes:
+
+**1. Global normalisation by `mean(|w|)` instead of `mean(w)` (`ttz_dataset.py`)**
+
+```python
+# Before
+weight_mean = np.mean(self.weights)
+self.weights = self.weights / weight_mean
+
+# After
+weight_abs_mean = float(np.mean(np.abs(self.weights)))
+self.weights = self.weights / weight_abs_mean
+```
+
+Using `mean(|w|)` guarantees a stable, positive denominator regardless of the sign
+distribution. For the linear case where 17% of weights are negative, `mean(w)` is
+significantly smaller than `mean(|w|)`, which inflated the normalised weights
+unnecessarily.
+
+The **negative-clamping block was removed entirely** — signed weights are kept as-is.
+
+**2. Per-batch normalisation by `mean(|w|)` instead of `mean(w)` (`made_mog.py`)**
+
+```python
+# Before
+batch_mean = weights.mean().clamp(min=1e-8)
+
+# After
+batch_mean = weights.abs().mean().clamp(min=1e-8)
+```
+
+With signed weights in the batch, `weights.mean()` can drift near zero (or go negative)
+if a batch is drawn heavily from the negative tail. `clamp(min=1e-8)` would then amplify
+all weights catastrophically. `weights.abs().mean()` is always a healthy positive number.
+Negative weights retain their gradient-suppression semantics — a negative $w_i$ pushes
+$p_\theta(x_i)$ down, which is physically correct for destructive interference.
+
+**3. `WeightStratifiedSampler` for batch composition (`ttz_dataset.py`)**
+
+Training with extreme positive outliers (quadratic max ~460×mean) is still risky even
+with per-batch normalisation: a batch drawn by chance entirely from the top quantile
+produces an unusually large gradient step. The fix is to *guarantee* that every batch
+spans the full weight range.
+
+`WeightStratifiedSampler(weights, batch_size, n_bins=4)`:
+- Divides training events into 4 equal-count bins by `|weight|`
+- Each batch takes `batch_size // 4` events from each bin (shuffled within bin each epoch)
+- Bins are recycled with re-shuffling when exhausted
+- **Weights are not modified** — only batch composition is controlled
+
+`ttzDataModule.train_dataloader()` is overridden to use this sampler automatically
+whenever `use_weights=True`.
+
+### Impact
+
+- ✅ Negative linear weights are preserved — no physics distortion from destructive interference
+- ✅ Quadratic extreme outliers are diluted per-batch without any value modification
+- ✅ Per-batch `mean(|w|)` normalisation is stable for all weight distributions
+- ✅ SM training is unaffected (sampler disabled when `use_weights=False`)
+
+---
+
+## Entry 36: Refined Stability Strategy — Stratified Sampling Only (No Per-Batch Normalisation)
+
+**Date:** 2026-03-09
+**Files:** `ml/custom/ttz/ttz_dataset.py`, `ml/flows/models/made_mog.py`
+
+### Problem
+
+Training with Entry 35 (stratified sampling + per-batch `mean(|w|)` normalisation) still failed:
+
+- **Linear**: `n_neg=911124 (24.58%)` — higher than the 17% observed in test subset. Validation loss exploded to $3.5 \times 10^{24}$ on epoch 0.
+- **Quadratic**: Stratified sampling helped (79 epochs!), but validation eventually went negative ($-3.2 \times 10^{16}$), indicating numerical overflow still occurring.
+
+Root cause analysis: **Per-batch normalisation rescales all weights in a batch by a constant factor**. While this shouldn't affect the *learned distribution* (the flow learns $\log q(x)$, not weights), it does:
+1. **Mask instability signals** — early stopping gets confused when validation loss is unnormalised
+2. **Introduce artificial scaling** — the flow sees weight magnitudes that depend on batch composition, not the true distribution
+
+### Solution
+
+**Revert to a simpler, cleaner approach:**
+
+1. **Global normalisation by `mean(w)` only** (`ttz_dataset.py`):
+   ```python
+   weight_mean = float(np.mean(self.weights))
+   self.weights = self.weights / weight_mean
+   ```
+   This is a one-time rescaling to unit mean. Signed weights (including negatives) are preserved fully.
+
+2. **Remove per-batch normalisation** (`made_mog.py`):
+   ```python
+   if sm_weights is not None and self.use_sm_weights:
+       weights = weights * sm_weights
+       # No further re-normalisation — stratified sampling controls batch composition
+   ```
+   The flow sees true weight magnitudes and distributions.
+
+3. **Keep stratified sampling** (`ttz_dataset.py`):
+   - Divides events into 4 quantile bins by $|w|$
+   - Each batch draws equally from all bins
+   - Applied to *both* train and validation dataloaders
+   
+   This ensures no batch is ever dominated by extreme-weight events, preventing numerical runaway.
+
+### Rationale
+
+Stratified sampling is a **structural control** on batch composition, whereas per-batch normalisation is a **gradient-scale hack**. The former is more principled:
+- ✅ Prevents extreme-weight batches by *design*, not by rescaling
+- ✅ Flow sees true weight range and relative magnitudes  
+- ✅ Early stopping signals are honest and comparable across epochs
+- ✅ No per-batch artefacts introduced
+
+The risk was: could an extreme-weight event still cause numerical overflow even with stratification? Possibly, but it's mitigated because:
+- Per-event loss `-(log_det_jacobian + mog_nll)` is bounded (log-prob range is finite)
+- Extreme-weight events are diluted in every batch by lower-weight events
+- If numerical issues persist, we can add a *soft* safety clamp (e.g., 10× median $|w|$) as a last resort
+
+### Impact
+
+- ✅ Flow learns from true, unscaled weight distributions
+- ✅ Stratified sampling (structural) replaces per-batch rescaling (hacky)
+- ✅ Early stopping and validation loss are meaningful and comparable
+- ✅ Negative weights fully preserved for linear component
+
+---
+
+## Entry 37: SNIS Normalisation in Training and Validation — Fix Overflow
+
+**Date:** 2026-03-09
+**File:** `ml/flows/models/made_mog.py`
+
+### Problem
+
+Entry 36 (stratification only, no per-batch normalisation) still failed:
+
+- **Linear**: Training loss went to $-8.4 \times 10^{20}$ by epoch 5
+- **Quadratic**: Best val loss was $-7.6 \times 10^7$ after only 3 epochs
+
+Logs confirmed the weight distributions are large: `max=283` (linear), `max=238` (quadratic). Stratification guarantees each batch draws from all weight bins, but does **not** bound the loss value. Once the flow starts fitting well and assigning high log-prob to high-weight events, the product `w × (-log p(x))` can become arbitrarily large regardless of batch composition.
+
+The critical oversight was that **validation_step had no weight normalisation at all**. The validation loss was computed as raw `mean(w × NLL)` with `w` up to 238–283, causing early stopping to fire on a spurious explosion.
+
+### Solution
+
+Apply **self-normalised importance sampling (SNIS)** consistently in all three weight-application sites:
+
+```python
+batch_abs_mean = weights.abs().mean().clamp(min=1e-8)
+weights = weights / batch_abs_mean
+```
+
+Applied to:
+1. `training_step` — already had this; restored after Entry 36 removed it
+2. `validation_step` (with `log_jac` branch) — **new**
+3. `validation_step` (without `log_jac` branch) — **new**
+
+### Why SNIS Does Not Affect Learned Physics
+
+SNIS estimates:
+
+$$\hat{E}_\text{SMEFT}[-\log q(x)] = \frac{\sum_i w_i (-\log q(x_i))}{\sum_i |w_i|}$$
+
+At inference, SMEFT reweighting computes density *ratios* $q_\text{SMEFT}(x) / q_\text{SM}(x)$. Any constant multiplicative factor in $q$ cancels in this ratio. So the learned *shape* of the distribution is identical regardless of per-batch scale — only the absolute normalisation would differ, which is irrelevant for ratio-based reweighting.
+
+Signs are fully preserved: a negative $w_i$ still pushes $q(x_i)$ down.
+
+### Combined Strategy (Entries 35–37)
+
+| Layer | Tool | Purpose |
+|---|---|---|
+| Global | `mean(w)` normalisation | Unit-mean starting scale |
+| Batch composition | `WeightStratifiedSampler` on train + val | Prevent outlier-dominated batches |
+| Loss scale | SNIS `/ mean(\|w\|)` in train + val | Prevent overflow as flow fits |
+
+### Impact
+
+- ✅ Prevents loss overflow in both training and validation
+- ✅ Validation loss is numerically stable and comparable across epochs
+- ✅ Early stopping fires for the right reason (plateau), not overflow
+- ✅ Negative weights (signed physics) fully preserved
+- ✅ Learned density shape unaffected — ratios cancel the scale
+
+
+---
+
+## Entry 38: Pos/Neg Flow Split — Proper Architecture for Signed SMEFT Weights
+
+**Date:** 2026-04-xx
+**Files:** `ml/custom/ttz/ttz_dataset.py`, `ml/custom/ttz/train_all_weights.py`, `ml/custom/ttz/smeft_reweighting.py`
+
+### Problem
+
+The root cause of all previous instability (Entries 35–37) is that normalising flows require non-negative importance weights, but the SMEFT linear and quadratic decomposition components are *signed measures*:
+
+- **Linear**: ~20% of events have negative weights (max=283, p99=23.8)
+- **Quadratic**: ~8% of events have negative weights (max=238, p99=23.8)
+
+The negative entries make the training objective **sign-indefinite and unbounded from below**: once the flow fits well and assigns high log-prob to a negative-weight event, the product `w × (-log p(x))` becomes a large positive loss, destabilising training. Clamping, SNIS, and stratification are palliatives but cannot fix the fundamental incompatibility.
+
+The "drop negatives" test (Entry 37 follow-up) confirmed stability at epoch 0 (train=13.84, val=14.00 for linear), proving that non-negative weights are trainable — the negatives were the sole cause of overflow.
+
+### Solution: Pos/Neg Flow Decomposition
+
+Decompose each signed weight component into two non-negative parts:
+
+$$w_\text{lin} = w_\text{lin}^+ - w_\text{lin}^-$$
+
+where $w_\text{lin}^+(x) = \max(w_\text{lin}(x), 0)$ and $w_\text{lin}^-(x) = \max(-w_\text{lin}(x), 0)$.
+
+Train **five** normalising flows, one per non-negative component:
+
+| Flow | Trained on | Training weights |
+|------|-----------|-----------------|
+| `sm` | all events | $w_\text{sm}$ |
+| `linear_pos` | events with $w_\text{lin} \geq 0$ | $w_\text{lin}$ |
+| `linear_neg` | events with $w_\text{lin} < 0$ | $|w_\text{lin}|$ (sign flipped) |
+| `quadratic_pos` | events with $w_\text{quad} \geq 0$ | $w_\text{quad}$ |
+| `quadratic_neg` | events with $w_\text{quad} < 0$ | $|w_\text{quad}|$ (sign flipped) |
+
+All training weights are strictly non-negative, so the flow objective is well-posed.
+
+The combination formula in `smeft_reweighting.py` reconstructs the full SMEFT weight:
+
+$$w_i(c) \propto Z_\text{sm} + c \left(Z_\text{lin}^+ \exp(r_{\text{lin}+,i}) - Z_\text{lin}^- \exp(r_{\text{lin}-,i})\right) + c^2 \left(Z_\text{quad}^+ \exp(r_{\text{quad}+,i}) - Z_\text{quad}^- \exp(r_{\text{quad}-,i})\right)$$
+
+where $Z_k = \sum_j w_{k,j}$ and $r_{k,i} = \log p_k(x_i) - \log p_\text{sm}(x_i)$.
+
+Note: $Z_\text{lin}^+ - Z_\text{lin}^- = Z_\text{lin}$ exactly (checked with assertion).
+
+### Changes
+
+**`ttz_dataset.py`**:
+- Extended `WEIGHT_COLS` with `linear_pos`, `linear_neg`, `quadratic_pos`, `quadratic_neg` (all pointing to the same raw column as their base type)
+- In `setup()`: for `_pos` types, filter to `w >= 0`; for `_neg` types, filter to `w < 0` and flip sign (`-w`)
+- Both filters applied *before* mean normalisation so `mean(|w|)` is correct on the kept subset
+- Base types (`linear`, `quadratic`) retain backward-compatible negative-dropping behavior with a warning recommending the split types
+
+**`train_all_weights.py`**:
+- `ALL_WEIGHT_TYPES` changed from `["sm", "linear", "quadratic"]` to `["sm", "linear_pos", "linear_neg", "quadratic_pos", "quadratic_neg"]`
+- Updated module docstring to describe the split architecture
+
+**`smeft_reweighting.py`**:
+- Added `import awkward as ak`
+- `compute_z_normalisations`: fixed `np.stack` ragged-array bug (now uses `ak.to_numpy` with index slicing); computes $Z_\text{lin}^\pm$ and $Z_\text{quad}^\pm$ with sanity assertions
+- `compute_log_ratios`: signature now takes 5 log-prob arrays, returns 4 log-ratio arrays
+- `get_weights`: signature updated to 4 log-ratio arrays; formula implements the pos/neg combination above
+- `plot_reweighted_distributions`, `plot_neff_curve`: updated to propagate 4 log-ratio arrays through to `get_weights`
+- `main()`: loads 5 models, computes 5 log-probs, saves 4 ratios to `density_ratios.npz`
+
+### Why This Is The Right Fix
+
+Every attempted workaround (clamping, abs, SNIS, stratification) distorted the
+physics by modifying *what the flows learn*. The pos/neg split is exact:
+
+- ✅ No information is discarded — *all* events contribute to one of the five flows
+- ✅ All five flows see strictly non-negative training weights — objective is well-posed
+- ✅ The combination formula reproduces the original signed SMEFT measure exactly
+- ✅ Negative per-event weights $w_i(c)$ can still appear at inference (destructive interference) — this is physically correct
+- ✅ `Z_lin_pos - Z_lin_neg = Z_lin` enforced by assertion in `compute_z_normalisations`
+
+### Impact
+
+- ✅ Training is numerically stable for all five weight types
+- ✅ No more overflow from signed importance weights
+- ✅ SMEFT combination formula analytically exact
+- ✅ `RATIOS_FILE` format updated (4 arrays instead of 2); old stale files will be detected and recomputed automatically
+
+---
+
+## Entry 39: Data-Adaptive Model and Batch-Size Scaling
+
+**Date:** 2026-03-09
+**Files:** `ml/custom/ttz/main_flows.py`, `ml/custom/ttz/ttz_dataset.py`
+
+### Problem
+
+The five-flow architecture (Entry 38) trains on subsets of very different sizes:
+
+| Weight type | ~% of events | n_train (of 3.7M) |
+|-------------|--------------|-------------------|
+| `sm` | 100% | ~2.96M |
+| `linear_pos` | ~80% | ~2.37M |
+| `linear_neg` | ~20% | ~0.59M |
+| `quadratic_pos` | ~92% | ~2.72M |
+| `quadratic_neg` | ~8% | ~0.22M |
+
+Using the same model (5 flows, 4 hidden layers, dim=384) and batch size (2048) for all runs is wasteful and risks overfitting for the small `_neg` subsets. The `quadratic_neg` job had already failed twice due to a separate empty-DataLoader bug, but even after fixing that, the architecture is disproportionately large for ~220k events.
+
+### Solution: Data-Size Tiers
+
+Added `_data_size_tier` and `_scale_config_to_data` helper functions to `main_flows.py`. After creating the data module, `setup("fit")` is called early to learn `n_train`, then the model config and batch size are scaled down according to a four-tier scheme:
+
+| Tier | n_train | scale | Affected runs |
+|------|---------|-------|---------------|
+| large | ≥ 1 000 000 | 1.00 | sm, linear_pos, quadratic_pos |
+| **medium** | **≥ 200 000** | **0.67** | **linear_neg, quadratic_neg** |
+| small | ≥ 50 000 | 0.50 | — |
+| tiny | < 50 000 | 0.33 | — |
+
+For `quadratic_neg` at medium (scale=0.67), the default config becomes:
+
+| Param | Default | Scaled |
+|-------|---------|--------|
+| `hidden_layer_dim` | 384 | 256 |
+| `hidden_layer_mog_dim` | 384 | 256 |
+| `num_flows` | 5 | 3 |
+| `num_hidden_layers` | 4 | 3 |
+| `num_hidden_layers_mog_net` | 4 | 3 |
+| `batch_size` | 2048 | 1280 |
+
+Parameters left unchanged: `n_mixtures`, `res_layers_in_block`, `batchnorm_flow`, `conv1x1`, `activation`. Changing the MoG mixture count has a larger quality impact than linear capacity scaling; residual blocks are cheap.
+
+### Changes
+
+**`main_flows.py`**:
+- Added `_data_size_tier(n_train) → (tier_name, scale_factor)` helper
+- Added `_scale_config_to_data(n_train, model_conf, data_module) → model_conf` helper: scales hidden dims (rounded to nearest 32), num_flows, num_hidden_layers, and batch_size (rounded to nearest 128); logs all changes; no-ops for large tier
+- After `ttzDataModule` creation, calls `data_module.setup("fit")` early, converts Hydra `DictConfig → dict` via `OmegaConf.to_container`, then calls `_scale_config_to_data`
+- Updated config logging to read batch_size from `data_module.dataloader_kwargs` (which may have been modified by scaling) rather than the raw yaml value
+
+**`ttz_dataset.py`**:
+- Added idempotency guard at the top of `setup()`: sets `_setup_done = True` on first call, returns immediately on subsequent calls. This prevents the expensive data-loading processor from running twice when Lightning calls `setup()` again during `trainer.fit()`.
+
+### Design Notes
+
+- Rounding to nearest 32 for hidden dims keeps CUDA memory alignment efficient
+- `n_mixtures` is kept fixed: the MoG distribution is the expressive core of MAFMADEMOG; reducing it would harm density estimation quality more than halving hidden dims
+- The early `setup("fit")` call is safe because `ttz_dataset.py` is now idempotent: Lightning's later call inside `trainer.fit()` hits the guard and returns immediately
+- All scaling logic is logged at INFO level with before/after values for each changed parameter
+
+### Impact
+
+- ✅ `quadratic_neg` and `linear_neg` trained with appropriately sized model (~40% fewer parameters)
+- ✅ Smaller batch size avoids DataLoader length issues on medium-sized datasets
+- ✅ Large-tier runs (sm, linear_pos, quadratic_pos) unaffected — full default config
+- ✅ No yaml changes needed — scaling is computed at runtime from actual data
+
+---
+
+## Entry 40: Fix sample_analyzer for pos/neg split and ttz_weights.npy
+
+**Date:** 2026-03-10
+**Files:** `ml/custom/ttz/run_smeft_analysis.py`, `ml/custom/ttz/sample_analyzer/analyzer.py`, `ml/custom/ttz/sample_analyzer/run_analysis.py`
+
+### Problems
+
+Two independent issues discovered when running `run_smeft_analysis.py` after the pos/neg split refactor (Entry 38):
+
+**1. `run_smeft_analysis.py` — stale weight type list**
+`ALL_WEIGHT_TYPES` still contained `["sm", "linear", "quadratic"]`. The script would have searched MLflow for models named `cHt5_linear` and `cHt5_quadratic`, which no longer exist. Updated to `["sm", "linear_pos", "linear_neg", "quadratic_pos", "quadratic_neg"]` to match the new five-flow architecture. Updated docstring example accordingly.
+
+**2. `analyzer.py` / `run_analysis.py` — `ttz.npy` does not exist**
+Both files hardcoded `"ml/data/ttz/ttz.npy"` which was never generated. Only `ttz_weights.npy` (15 features + 4 SMEFT weight columns = 19 columns) exists on disk.
+
+Additionally, `analyzer.py` contained a dead weight-extraction block (`if self.original_data.shape[1] == 16`) written for a legacy single-weight file that no longer exists. This produced misleading "UNWEIGHTED" warnings.
+
+### Changes
+
+**`run_smeft_analysis.py`**:
+- `ALL_WEIGHT_TYPES` updated from `["sm", "linear", "quadratic"]` to `["sm", "linear_pos", "linear_neg", "quadratic_pos", "quadratic_neg"]`
+- Docstring usage example updated
+
+**`run_analysis.py`**:
+- `data_dir` changed from `"ml/data/ttz/ttz.npy"` → `"ml/data/ttz/ttz_weights.npy"`
+
+**`analyzer.py`**:
+- Primary `original_data` load: `ttz.npy` → `ttz_weights.npy`, adds `full_data = full_data[:, :15]` slice to keep only the 15 physics feature columns
+- Scaler-refit fallback path in `_setup_preprocessing`: same `ttz.npy` → `ttz_weights.npy` fix with matching 15-column slice
+- Removed dead weight-extraction block (`if self.original_data.shape[1] == 16`); replaced with `self.original_weights = None` and a comment explaining that SMEFT reweighting is handled by `smeft_reweighting.py`, not this analyzer
+
+### Design Notes
+
+- `ttz_weights.npy` has shape `(3707227, 19)`: columns 0–14 are the 15 physics features, columns 15–18 are `(w_sm, w_lin, w_quad, w_full)`. Slicing `[:, :15]` gives the same feature array that the flow models were trained on.
+- This analyzer produces **unweighted** SM comparison plots (flow samples vs MC data), which is the correct use case. SMEFT-reweighted plots are produced separately by `smeft_reweighting.py`.
+
+### Impact
+
+- ✅ `run_smeft_analysis.py` now finds all five models in MLflow registry
+- ✅ `FileNotFoundError: ttz.npy` resolved for all weight types
+- ✅ No spurious "MC histograms will be UNWEIGHTED" warning
+
+---
+
+## Entry 41: Fix analyzer.py — UnboundLocalError and greedy regex for _pos/_neg models
+
+### Problem
+
+Feature comparison plots for `linear_pos`, `linear_neg`, `quadratic_pos`, and `quadratic_neg` models showed the wrong data: the MC data histogram was the full unfiltered dataset instead of the sign-filtered subset, and **no weights were applied** to it at all. This caused large visible discrepancies (e.g. `Z_DeltaR` for `lin_neg`) where the "MC data" panel looked nothing like the generated panel.
+
+Two bugs compounded to cause this:
+
+**Bug 1 — `UnboundLocalError` in `analyzer.py` `__init__` (crash)**
+
+The filtering block for `_pos`/`_neg` types did:
+```python
+full_data = full_data[valid_mask]   # ← referenced before assignment
+```
+But `full_data` was defined *after* this block:
+```python
+full_data = full_data_with_weights[:, :15]   # too late
+```
+Python's scoping treats `full_data` as a local variable because it is assigned later in the same scope, so accessing it earlier raises `UnboundLocalError`. The `__init__` crashed for all four `_pos`/`_neg` models, `run_smeft_analysis.py` logged the failure and moved on, and the stale plots from a prior run were left on disk.
+
+**Bug 2 — greedy `\w+` regex swallowed model-name suffixes**
+
+Even if Bug 1 had not crashed, the weight-type extraction:
+```python
+re.search(r'cHt5_(\w+)', model_name)  # captured "linear_neg_nall" not "linear_neg"
+```
+matched all word characters including the `_nall` suffix embedded in every model name (`…cHt5_linear_neg_nall`). The captured string `"linear_neg_nall"` was not in `weight_col_map`, so `self.original_weights = None` was set for every model — meaning even `sm` data was shown unweighted.
+
+### Changes
+
+**`ml/custom/ttz/sample_analyzer/analyzer.py`**:
+
+- Moved `full_data = full_data_with_weights[:, :15]` to *before* the sign-filtering block, so `full_data[valid_mask]` is valid in both `_pos` and `_neg` branches.
+- Removed the now-redundant second `full_data = …` assignment that used to follow the filtering block.
+- Updated the final `self.original_data` assignment to use the (possibly filtered) `full_data` and log the row count.
+- Replaced the greedy `re.search(r'cHt5_(\w+)', ...)` with an explicit alternation:
+  ```python
+  re.search(r'cHt5_(quadratic_(?:pos|neg)|linear_(?:pos|neg)|sm|quadratic|linear|full)', model_name)
+  ```
+  This matches the longest known type token first (e.g. `quadratic_pos` before `quadratic`) and stops before any trailing suffixes like `_nall`.
+
+### Impact
+
+- ✅ `linear_neg` / `quadratic_neg` analyzers no longer crash in `__init__`
+- ✅ MC data for each model is now the correct sign-filtered subset (e.g. `linear_neg` uses only events where `w_linear < 0`)
+- ✅ MC data is weighted by `|w|` of the appropriate column, matching exactly what each flow was trained on
+- ✅ No more "Unknown weight_type" warnings in `run_smeft_analysis.py` output
+
+---
+
+## Entry 42: Add Ragged Array Guard to smeft_reweighting.py
+
+### Problem
+
+Running `smeft_reweighting.py` after switching to the new ROOT file (`ttZ_for_Melle_tree.root`) crashed with:
+```
+IndexError: cannot slice ListArray (of length 3707228) with array(124): 
+index out of range while attempting to get index 124
+```
+
+The new ROOT file contains some events with fewer than 125 SMEFT weight values (ragged array). Direct indexing 
+with `data['smeft_weights'][:, 124]` fails because some inner arrays are shorter than expected.
+
+### Root Cause
+
+`ttZ_for_Melle_tree.root` has incomplete SMEFT weight arrays for some events. Both functions that read this file 
+were missing the **ragged array guard**:
+- `compute_z_normalisations()`: tried `[:, IDX_CHT_PLUS5]` directly on ragged awkward array
+- `load_root_features_and_weights()`: tried `np.stack()` on ragged data, which also fails
+
+Meanwhile, `process_ttz_dataset.py` (which generates training data from the same file) had already implemented 
+this guard correctly.
+
+### Changes
+
+**`ml/custom/ttz/smeft_reweighting.py`**:
+
+1. **`compute_z_normalisations()`**:
+   - Load `smeft_weights` via awkward
+   - Filter with `ak.num(smeft_ak) > 124` → valid_mask
+   - Drop events with fewer than 125 weights (may be 0 or a few depending on file)
+   - Only then index with `[:, IDX_CHT_PLUS5]` and `[:, IDX_CHT_MINUS5]`
+
+2. **`load_root_features_and_weights()`**:
+   - Load feature branches with numpy (regular), smeft_weights separately with awkward (ragged)
+   - Apply same `ak.num(smeft_ak) > 124` filter
+   - Filter all data arrays (`data[key] = data[key][valid_mask]`)
+   - Convert cleaned smeft_ak to regular array with `ak.to_regular()` before indexing
+
+3. **branches_to_load cleanup**:
+   - Removed `'smeft_weights'` from the numpy-based load (it's now loaded separately)
+   - Added comment explaining the separate ragged load
+
+### Impact
+
+- ✅ Both `compute_z_normalisations()` and `load_root_features_and_weights()` now handle ragged arrays safely
+- ✅ Matches the guard already in `process_ttz_dataset.py` (consistent across codebase)
+- ✅ `smeft_reweighting.py` can now run successfully on the new ROOT file
+- ✅ Z-factors and feature comparisons computed from the correct, consistent data source
+
+### Consistency Note
+
+All three components now use identical logic:
+- **Training data generation** (process_ttz_dataset.py): ✓ Guard implemented
+- **Z-factor computation** (smeft_reweighting.py): ✓ Guard now implemented
+- **Weight decomposition** (plot_weight_contributions.py): ✓ Implicitly safe (loads pre-filtered ttz_weights.npy)
+
+---
+
+## Entry 43: GPU Support and Condor Batch Job for smeft_reweighting.py
+
+### Motivation
+
+Running `smeft_reweighting.py` with 10M samples was prohibitively slow on CPU:
+- Sampling alone (Step 3) was taking ~60 minutes (25 minutes at 40%)
+- Sampling is autoregressive: $d$ sequential forward passes over all $N$ samples → exactly the kind of large matrix multiply that benefits from GPU
+- Steps 4 (log prob evaluation) also benefits from GPU when computing ratios fresh
+
+### Changes
+
+**`ml/custom/ttz/smeft_reweighting.py`**:
+
+1. **`load_module(model_name, device='cpu')`**: Added `device` parameter (default `'cpu'`, backward compatible).
+   - Calls `.to(dev)` instead of `.cpu()`
+   - Patches `MADEMOG.device` and `AutoregressiveNormalizingFlow.device` to the target device (previously only patched to CPU)
+
+2. **`sample_from_sm_flow()`**: Refactored to sample in chunks of 500k instead of all at once.
+   - Avoids GPU OOM for 10M samples (L40S has 46GB VRAM, but autoregressive sampling holds intermediate tensors)
+   - Each chunk result is moved to CPU immediately (`.detach().cpu().numpy()`)
+   - Progress logged every chunk: `500,000 / 10,000,000 sampled (5%) ...`
+   - Result is always a CPU numpy array regardless of model device
+
+3. **`--device cuda` CLI argument**: Wires through to all 5 model loads (sm, lin_pos, lin_neg, quad_pos, quad_neg). Inverse transform always loads on CPU since it is pure numpy scaler operations.
+
+4. **Redundant `w_root` computation fixed**: `w_root_c` is now computed once per c-value outside the feature loop, not 22× inside it (no functional change, minor speedup).
+
+**New condor files**:
+
+- `condor/mveldijk/condorsub/smeft_reweighting.sub`: Requests 1× L40S GPU, 4 CPUs, 64GB RAM
+- `condor/mveldijk/condorsub/smeft_reweighting.sh`: Sources same env/venv as training jobs, runs:
+  ```
+  python ml/custom/ttz/smeft_reweighting.py --device cuda --n-samples 10000000
+  ```
+
+### GPU vs CPU Breakdown
+
+| Step | GPU benefit? | Reason |
+|------|-------------|--------|
+| Step 2: Z-factors (ROOT I/O) | ❌ | Pure numpy/awkward I/O |
+| Step 3: Sampling (10M events) | ✅ **Major** | Autoregressive: $d$ sequential large matmuls |
+| Step 4: Log prob evaluation (5 flows × 10M) | ✅ **Major** | Batched neural net forward passes |
+| Step 5: Log density ratios | ❌ | Trivial numpy arithmetic |
+| Step 7: Inverse transform + plotting | ❌ | Pure numpy + matplotlib |
+
+### Impact
+
+- ✅ `smeft_reweighting.py` can now be submitted as a GPU batch job via condor
+- ✅ Sampling speedup expected: 10-50× (CPU: ~60 min → GPU: ~2-5 min for 10M samples)
+- ✅ Chunked sampling gives per-chunk progress feedback (previously no feedback for 25+ minutes)
+- ✅ `--load-ratios` path still works unchanged (loads CPU model for inverse transform only)
+- ✅ Backward compatible: default `--device cpu` preserves existing interactive behaviour
+

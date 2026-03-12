@@ -17,7 +17,7 @@ def get_range_limits(data, percentile_range=0.1):
 
 
 def plot_feature_comparison(real_data, generated_data, selected_features, selection, 
-                           variables, output_path, bins=50, n_cols=3, real_weights=None):
+                           variables, output_path, bins=50, n_cols=3, real_weights=None, weight_type=None):
     """
     Plot comparison of all features between real and generated data with ratio plots.
     Creates both normal and log scale versions.
@@ -42,17 +42,19 @@ def plot_feature_comparison(real_data, generated_data, selected_features, select
         Number of columns in plot grid
     real_weights : np.ndarray, optional
         Event weights for real data (e.g., cHt=5.0 SMEFT weights)
+    weight_type : str, optional
+        Weight type for labeling (e.g., 'linear_pos', 'quadratic_neg')
     """
     # Create both normal and log scale versions
     for use_log_scale in [False, True]:
         _create_feature_comparison_plot(
             real_data, generated_data, selected_features, selection,
-            variables, output_path, bins, n_cols, use_log_scale, real_weights
+            variables, output_path, bins, n_cols, use_log_scale, real_weights, weight_type
         )
 
 
 def _create_feature_comparison_plot(real_data, generated_data, selected_features, selection, 
-                                   variables, output_path, bins, n_cols, use_log_scale, real_weights=None):
+                                   variables, output_path, bins, n_cols, use_log_scale, real_weights=None, weight_type=None):
     """
     Plot comparison of all features between real and generated data with ratio plots.
     
@@ -74,8 +76,12 @@ def _create_feature_comparison_plot(real_data, generated_data, selected_features
         Number of histogram bins
     n_cols : int
         Number of columns in plot grid
+    use_log_scale : bool
+        Whether to use log scale
     real_weights : np.ndarray, optional
         Event weights for real data
+    weight_type : str, optional
+        Weight type for labeling
     """
     # Calculate grid dimensions
     n_features = len(selected_features)
@@ -117,10 +123,31 @@ def _create_feature_comparison_plot(real_data, generated_data, selected_features
         
         bin_centers = (bins_edges[:-1] + bins_edges[1:]) / 2
         
-        # Main plot
-        label_real = 'MC data (weighted cHt=5.0)' if real_weights is not None else 'SM MC data'
+        # Main plot — generate descriptive labels based on weight type
+        if weight_type and weight_type != "unknown":
+            # Create shortened weight type labels for compact display
+            short_weight_map = {
+                "sm": "sm",
+                "linear": "lin",
+                "linear_pos": "lin_pos",
+                "linear_neg": "lin_neg",
+                "quadratic": "qua",
+                "quadratic_pos": "qua_pos",
+                "quadratic_neg": "qua_neg",
+                "full": "full",
+            }
+            short_type = short_weight_map.get(weight_type, weight_type)
+            
+            if weight_type.endswith('_neg'):
+                label_real = f'MC data (weighted to {short_type}, |w|)'
+            else:
+                label_real = f'MC data (weighted to {short_type})'
+        else:
+            label_real = 'MC data (weighted)' if real_weights is not None else 'MC data (unweighted)'
+        
+        label_gen = 'Generated samples'
         ax_main.step(bin_centers, hist_real, color='blue', label=label_real, where='mid', lw=2)
-        ax_main.step(bin_centers, hist_gen, color='red', label='cHt=5.0 Generated', where='mid', lw=2)
+        ax_main.step(bin_centers, hist_gen, color='red', label=label_gen, where='mid', lw=2)
         
         # Formatting main plot
         if use_log_scale:

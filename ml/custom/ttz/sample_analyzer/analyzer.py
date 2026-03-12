@@ -43,22 +43,71 @@ class ttzSampleAnalyzer:
         self.variables_json_path = variables_json_path
         self.model_name = model_name
         
+        # Extract weight type from model name (e.g., "cHt5_linear_pos_nall_..." → "linear_pos")
+        # Use explicit alternation to avoid capturing trailing suffixes like "_nall"
+        import re
+        weight_match = re.search(
+            r'cHt5_(quadratic_(?:pos|neg)|linear_(?:pos|neg)|sm|quadratic|linear|full)',
+            model_name
+        )
+        self.weight_type = weight_match.group(1) if weight_match else "unknown"
+        logging.info(f"Detected weight type from model name: '{self.weight_type}'")
+        
         # Load variables configuration
         with open(variables_json_path, 'r') as f:
             self.variables = json.load(f)
         
-        # Load ORIGINAL unprocessed data directly for comparison
-        original_data_path = "ml/data/ttz/ttz.npy"
+        # Load ORIGINAL unprocessed data directly for comparison.
+        # ttz_weights.npy has shape (N, 19): 15 physics features + 4 SMEFT weight columns.
+        original_data_path = "ml/data/ttz/ttz_weights.npy"
         if not os.path.exists(original_data_path):
             raise FileNotFoundError(f"Original data file not found: {original_data_path}")
+
+        full_data_with_weights = np.load(original_data_path)
+        logging.info(f"Loaded original ttZ data with weights shape: {full_data_with_weights.shape}")
         
-        full_data = np.load(original_data_path)
-        logging.info(f"Loaded full original ttZ data shape: {full_data.shape}")
+        # Extract the 15 physics feature columns first (needed before any filtering below)
+        full_data = full_data_with_weights[:, :15]
+        logging.info(f"Extracted physics features shape: {full_data.shape}")
         
-        # Use FULL dataset for comparison (training + validation + test)
-        # Note: This provides more statistics for comparison plots than test set alone
+        # Extract weights for this model's weight type
+        # Weight columns: 15=sm, 16=linear, 17=quadratic, 18=full
+        weight_col_map = {
+            "sm": 15,
+            "linear": 16, "linear_pos": 16, "linear_neg": 16,
+            "quadratic": 17, "quadratic_pos": 17, "quadratic_neg": 17,
+            "full": 18,
+        }
+        
+        if self.weight_type in weight_col_map:
+            col_idx = weight_col_map[self.weight_type]
+            raw_weights = full_data_with_weights[:, col_idx]
+            
+            # For _pos/_neg types, filter to the appropriate subset and apply sign-flipping
+            if self.weight_type.endswith('_pos'):
+                valid_mask = raw_weights >= 0
+                self.original_weights = raw_weights[valid_mask]
+                full_data = full_data[valid_mask]
+                component = self.weight_type.split('_')[0]  # "linear" or "quadratic"
+                logging.info(f"Filtered to {valid_mask.sum()} events with {component} >= 0")
+            elif self.weight_type.endswith('_neg'):
+                valid_mask = raw_weights < 0
+                self.original_weights = -raw_weights[valid_mask]  # flip sign to positive
+                full_data = full_data[valid_mask]
+                component = self.weight_type.split('_')[0]  # "linear" or "quadratic"
+                logging.info(f"Filtered to {valid_mask.sum()} events with {component} < 0 (sign flipped to positive)")
+            else:
+                # SM or base types (linear, quadratic, full) — no filtering
+                self.original_weights = raw_weights
+            
+            logging.info(f"Loaded weights from column {col_idx} for weight_type='{self.weight_type}'")
+            logging.info(f"  Weight stats: min={self.original_weights.min():.6e}, max={self.original_weights.max():.6e}, mean={self.original_weights.mean():.6e}")
+        else:
+            self.original_weights = None
+            logging.warning(f"Unknown weight_type '{self.weight_type}' — using unweighted comparison")
+        
         self.original_data = full_data
-        logging.info(f"Using FULL DATASET for comparison: {self.original_data.shape}")
+        logging.info(f"Using {full_data.shape[0]} events for comparison: shape {self.original_data.shape}")
         
         # Also load preprocessed data (for reference)
         if not os.path.exists(data_dir):
@@ -134,11 +183,13 @@ class ttzSampleAnalyzer:
             logging.warning("FALLBACK: Refitting scalers on full dataset (may cause distribution mismatch!)")
             
             # Fallback: refit scalers (not recommended - will cause CDF mismatch)
-            original_data_path = "ml/data/ttz/ttz.npy"
+            original_data_path = "ml/data/ttz/ttz_weights.npy"
             if not os.path.exists(original_data_path):
                 raise FileNotFoundError(f"Original data file not found: {original_data_path}")
-            
+
             original_data = np.load(original_data_path)
+            if original_data.shape[1] >= 15:
+                original_data = original_data[:, :15]
             logging.info(f"Loaded original ttZ data shape: {original_data.shape}")
             
             pre = Preprocessor(**preprocessing_config)
@@ -161,22 +212,9 @@ class ttzSampleAnalyzer:
         logging.info(f"Checking for weights in data: shape = {self.original_data.shape}")
         print(f"\n=== Weight Extraction Debug ===")
         print(f"Original data shape: {self.original_data.shape}")
-        if self.original_data.shape[1] == 16:  # 15 features (cylindrical coords, no charges) + 1 weight
-            self.original_weights = self.original_data[:, -1]  # Last column is weight
-            self.original_data = self.original_data[:, :-1]  # Remove weight from features
-            print(f"✓ Extracted cHt=5.0 weights from data")
-            print(f"  Weights: min={np.min(self.original_weights):.6e}, max={np.max(self.original_weights):.6e}, mean={np.mean(self.original_weights):.6e}")
-            print(f"  Data after extraction: {self.original_data.shape}, Weights: {self.original_weights.shape}")
-            logging.info(f"✓ Extracted cHt=5.0 weights from data: min={np.min(self.original_weights):.6e}, "
-                        f"max={np.max(self.original_weights):.6e}, mean={np.mean(self.original_weights):.6e}")
-            logging.info(f"  After weight extraction: data shape = {self.original_data.shape}, weights shape = {self.original_weights.shape}")
-        else:
-            self.original_weights = None
-            print(f"✗ WARNING: No weights found!")
-            print(f"  Expected 16 columns (15 cylindrical features + 1 weight), got {self.original_data.shape[1]}")
-            print(f"  MC histograms will be UNWEIGHTED!")
-            logging.warning(f"✗ No weights found in data! Expected 16 columns (15 cylindrical features + 1 weight), got {self.original_data.shape[1]}")
-            logging.warning("  MC histograms will be UNWEIGHTED - this is incorrect for cHt=5.0 comparison!")
+        # ttz_weights.npy is sliced to 15 feature columns before this point.
+        # SMEFT reweighting plots use smeft_reweighting.py, not this analyzer.
+        self.original_weights = None
         print("="*40 + "\n")
         
         # Note: Data is now created in physics-motivated order (1 Jet → 3 Leptons → MET) directly
@@ -322,10 +360,11 @@ class ttzSampleAnalyzer:
         plot_feature_comparison(
             real_data, gen_data, features,
             self.selection, self.variables, output_path, bins, n_cols,
-            real_weights=self.original_weights  # Pass weights for proper comparison
+            real_weights=self.original_weights,
+            weight_type=self.weight_type
         )
         
-    def plot_all(self, include_derived=True):
+    def plot_all(self, include_derived=True, figures_dir=None):
         """
         Generate all comparison plots.
         
@@ -333,6 +372,15 @@ class ttzSampleAnalyzer:
         ----------
         include_derived : bool
             Whether to include derived Z kinematics variables
+        figures_dir : str or Path, optional
+            Directory to save figures. Defaults to sample_analyzer/figures/.
         """
-        self.plot_feature_comparison(include_derived=include_derived)
+        if figures_dir is not None:
+            import pathlib
+            figures_dir = str(figures_dir)
+            os.makedirs(figures_dir, exist_ok=True)
+            output_path = os.path.join(figures_dir, 'feature_comparison.png')
+        else:
+            output_path = None  # plot_feature_comparison will use its own default
+        self.plot_feature_comparison(output_path=output_path, include_derived=include_derived)
         print("Plots saved successfully!")

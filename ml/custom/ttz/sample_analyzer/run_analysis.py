@@ -3,6 +3,8 @@
 
 import sys
 import os
+import argparse
+from pathlib import Path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..'))
 sys.path.insert(0, project_root)
 
@@ -74,16 +76,34 @@ def get_latest_ttz_model():
 
 def main():
     """Run the complete ttZ analysis pipeline."""
-    
+
+    parser = argparse.ArgumentParser(description="Run ttZ sample analysis.")
+    parser.add_argument(
+        "--model-name",
+        type=str,
+        default=None,
+        help="MLflow model name to load. Defaults to the latest model found in mlruns/models.",
+    )
+    parser.add_argument(
+        "--figures-dir",
+        type=Path,
+        default=None,
+        help="Directory to save figures. Defaults to sample_analyzer/figures/.",
+    )
+    args = parser.parse_args()
+
     print("="*60)
     print("ttZ Sample Analysis")
     print("="*60)
-    
+
     # Configuration
-    data_dir = "ml/data/ttz/ttz.npy"
+    # ttz_weights.npy holds 15 physics features + 4 SMEFT weight columns (19 cols total).
+    # The analyzer slices the first 15 columns, so we pass the same file for both roles.
+    data_dir = "ml/data/ttz/ttz_weights.npy"
     variables_json = "ml/data/ttz/variables.json"
-    model_name = get_latest_ttz_model() #"ttz_small_8x512_phi_scaled" 
-    
+    model_name = args.model_name or get_latest_ttz_model()
+    figures_dir = args.figures_dir  # None → analyzer uses its own default
+
     # Initialize analyzer
     print("\nInitializing ttZ analyzer...")
     print("\nUsing model:", model_name)
@@ -92,19 +112,20 @@ def main():
         variables_json_path=variables_json,
         model_name=model_name
     )
-    
+
     # Generate samples
     print("\nGenerating samples from model...")
-    n_samples = 1000000  
+    n_samples = 1000000
     analyzer.generate_samples(n_samples=n_samples, chunks=10, debug=True)
-    
+
     # Create all plots
     print("\nCreating comparison plots...")
-    analyzer.plot_all()
-    
+    analyzer.plot_all(figures_dir=figures_dir)
+
+    out_dir = figures_dir or "ml/custom/ttz/sample_analyzer/figures/"
     print("\n" + "="*60)
     print("Analysis complete!")
-    print("Plots saved to: ml/custom/ttz/sample_analyzer/figures/")
+    print(f"Plots saved to: {out_dir}")
     print("="*60)
 
 

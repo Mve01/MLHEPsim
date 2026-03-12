@@ -293,6 +293,14 @@ class MOGFlowModel(FlowModel):
         # Apply SM event weights if available
         if sm_weights is not None and self.use_sm_weights:
             weights = weights * sm_weights
+            # Self-normalised importance sampling (SNIS): divide by mean(|w|) per batch.
+            # This is the correct estimator for E_SMEFT[-log q(x)] and is equivalent
+            # to NLL under the SMEFT distribution. It prevents overflow when the flow
+            # starts assigning high log-prob to extreme-weight events.
+            # Signs are preserved: negative weights still push q down at those events.
+            # The absolute scale cancels at inference since we use density ratios.
+            batch_abs_mean = weights.abs().mean().clamp(min=1e-8)
+            weights = weights / batch_abs_mean
         
         # Weighted loss: focus on core data regions and/or weight by SM cross-section
         weighted_losses = weights * sample_losses
@@ -348,6 +356,8 @@ class MOGFlowModel(FlowModel):
             if sm_weights is not None and self.use_sm_weights:
                 sm_weights_masked = sm_weights[mask]
                 weights = weights * sm_weights_masked
+                batch_abs_mean = weights.abs().mean().clamp(min=1e-8)
+                weights = weights / batch_abs_mean
             
             # Weighted loss: consistent with training objective
             weighted_losses = weights * sample_losses
@@ -373,6 +383,8 @@ class MOGFlowModel(FlowModel):
             # Apply SM event weights if available
             if sm_weights is not None and self.use_sm_weights:
                 weights = weights * sm_weights
+                batch_abs_mean = weights.abs().mean().clamp(min=1e-8)
+                weights = weights / batch_abs_mean
             
             # Weighted loss
             weighted_losses = weights * sample_losses
