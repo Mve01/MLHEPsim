@@ -1,0 +1,159 @@
+% !TeX program = pdflatex
+\documentclass[aspectratio=169]{beamer}
+
+% Theme
+\usetheme{Madrid}
+\usecolortheme{default}
+\setbeamertemplate{navigation symbols}{}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{graphicx}
+
+% Optional: section title frame at each new section
+\AtBeginSection[]
+{
+  \begin{frame}{Outline}
+    \tableofcontents[currentsection]
+  \end{frame}
+}
+
+% Metadata
+\title[CNF for Fast Generation of MC SMEFT Events]{Conditional Normalizing Flow for Fast Generation of MC SMEFT Events}
+\subtitle{A case study on ttZ data generation conditioned on Wilson coefficient cHt}
+\author[Melle van Eldijk]{Melle van Eldijk}
+\institute[NIKHEF and UvA]{NIKHEF and University of Amsterdam}
+\date{\today}
+
+\begin{document}
+
+% Title slide
+\begin{frame}
+  \titlepage
+\end{frame}
+
+% Outline
+\begin{frame}{Outline}
+  \tableofcontents
+\end{frame}
+
+\section{Introduction}
+
+\begin{frame}{Motivation}
+  \begin{itemize}
+    \item Current MC simulation slow
+    \item Need for fast generation of events
+    \item Potential of normalizing flows
+    \item Method widely applicable to other processes and parameters
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Motivation: MC simulation slow}
+    \begin{itemize}
+    \item In 2017 20\% of the ATLAS computing resources were used for MC simulation \cite{hsf2021mcgen}
+    \item Current MC generation can take days or weeks for complex processes
+    \item With the HL-LHC, more complex events and more data will require even more MC simulation
+    \item We need faster and more efficient MC generation
+    \end{itemize}
+    
+\end{frame}
+
+\section{Idea}
+\begin{frame}{Idea}
+  \begin{itemize}
+    \item Take already existing MC data
+    \item Train a conditional normalizing flow to learn the distribution of events
+    \item Condition the flow on a Wilson coefficient 
+    \item Use the trained flow to generate new events for any value of the Wilson coefficient, much faster than traditional MC simulation
+  \end{itemize}
+\end{frame}
+
+\section{Setup}
+\begin{frame}{Normalizing flow: MAFMADEMOG}
+  \begin{itemize}
+    \item Masked Autoregressive Flow (MAF) 
+    \begin{itemize}
+      \item A type of normalizing flow that models complex distributions by transforming a simple base distribution through a series of invertible transformations
+    \end{itemize}
+    \item MADE (Masked Autoencoder for Distribution Estimation) 
+    \begin{itemize}
+      \item A type of autoregressive model that allows for efficient sampling and density estimation
+    \end{itemize}
+    \item MOG (Mixture of Gaussians) 
+    \begin{itemize}
+      \item Used as the base distribution for the flow, allowing it to model complex distributions
+    \end{itemize}
+  \end{itemize}
+
+\end{frame}
+
+\begin{frame}{Interactive Architecture Artifact}
+  \begin{itemize}
+    \item Click to open the interactive visualization:
+  \end{itemize}
+
+  \vspace{0.4cm}
+  \centering
+  \Large
+  \href{https://claude.ai/public/artifacts/72c0654f-7dad-4cef-ac68-80df06001473}{Open Claude Artifact (interactive)}
+
+  \vspace{0.5cm}
+  \normalsize
+  \url{https://claude.ai/public/artifacts/72c0654f-7dad-4cef-ac68-80df06001473}
+\end{frame}
+
+\begin{frame}{Equation Example}
+  \[
+    p(x\mid\theta) = \frac{1}{Z(\theta)}\exp\left(-E(x;\theta)\right)
+  \]
+\end{frame}
+
+\section{Results}
+
+\begin{frame}{Figure Placeholder}
+  \begin{center}
+    % Replace with your figure path
+    % \includegraphics[width=0.85\textwidth]{figures/result_plot.pdf}
+    \fbox{\parbox[c][0.45\textheight][c]{0.85\textwidth}{\centering Insert figure here}}
+  \end{center}
+\end{frame}
+
+\begin{frame}{Table Example}
+  \begin{table}
+    \centering
+    \begin{tabular}{lcc}
+      \toprule
+      Model & Metric A & Metric B \\
+      \midrule
+      Baseline & 0.91 & 0.78 \\
+      Improved & 0.94 & 0.83 \\
+      \bottomrule
+    \end{tabular}
+  \end{table}
+\end{frame}
+
+\section{Conclusion}
+
+\begin{frame}{Takeaways}
+  \begin{itemize}
+    \item Main conclusion
+    \item Supporting evidence
+    \item Next steps
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Backup}
+  \centering
+  Questions?
+\end{frame}
+
+\begin{frame}[allowframebreaks]{References}
+  \bibliographystyle{unsrt}
+  \bibliography{references}
+\end{frame}
+
+\end{document}

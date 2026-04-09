@@ -16,6 +16,7 @@ class ttzNpyProcessor(NpyProcessor):
         data_dir,
         list_data_features,
         base_file_name="ttz",
+        coordinate_system="ptetaphi",
         keep_ratio=1.0,
         shuffle=True,
         hold_mode=False,
@@ -44,9 +45,16 @@ class ttzNpyProcessor(NpyProcessor):
         hold_ratio : float, optional
             Ratio of holdout data in partition_2, by default 0.2.
         """
-        # Use a separate filename when storing all weight columns to avoid conflicts with
-        # the plain feature-only file.
-        _base = f"{base_file_name}_weights" if load_weights else base_file_name
+        # Use a coordinate-tagged filename so switching representation never reuses
+        # a stale cache with different feature semantics.
+        coord_key = coordinate_system.lower()
+        if coord_key in {"ptetaphi", "pt_eta_phi"}:
+            coord_tag = "ptetaphi"
+        else:
+            coord_tag = "cartesian"
+        self.coordinate_system = coord_tag
+        _base_core = f"{base_file_name}_{coord_tag}"
+        _base = f"{_base_core}_weights" if load_weights else _base_core
         super().__init__(data_dir, _base)
         self.file_name = None
         self.keep_ratio = keep_ratio
@@ -55,33 +63,21 @@ class ttzNpyProcessor(NpyProcessor):
         self.load_weights = load_weights
         self.list_data_features = list_data_features
         
-        # Define features for processed data - must match the order in create_dataset()
-        # Using cylindrical coordinates (Pt, Eta, Phi) - physics-motivated representation
-        # Physics-motivated order: Z leptons (2×3=6) → W lepton (1×3=3) → BJet (1×4=4) → MET (2) = 15 features total
-        # Charge features removed: not used in any physics calculation and trivially ±1
-        processed_features = []
-        # Z leptons first - from Z boson decay
-        for i in [1, 2]:
-            for var in ['Pt', 'Eta', 'Phi']:
-                processed_features.append(f'Z_Lepton{i}_{var}')
-        # W lepton second - from W boson decay
-        for var in ['Pt', 'Eta', 'Phi']:
-            processed_features.append(f'W_Lepton_{var}')
-        # BJet third - from top quark decay
-        for var in ['Pt', 'Eta', 'Phi', 'Mass']:
-            processed_features.append(f'BJet_{var}')
-        # MET last - global event properties
-        processed_features.extend(['MET', 'MET_Phi'])
+        # Define features for processed data - must match create_dataset() exactly.
+        # Physics-motivated order: Z leptons (2x3) -> W lepton (1x3) -> BJet (1x4) -> MET (2) = 15.
+        processed_features = [
+            'Z_Lepton1_Pt', 'Z_Lepton1_Eta', 'Z_Lepton1_Phi',
+            'Z_Lepton2_Pt', 'Z_Lepton2_Eta', 'Z_Lepton2_Phi',
+            'W_Lepton_Pt',  'W_Lepton_Eta',  'W_Lepton_Phi',
+            'BJet_Pt',      'BJet_Eta',      'BJet_Phi',      'BJet_Mass',
+            'MET',          'MET_Phi',
+        ]
         
         # Create features dict with 15 physics features
-        # Phi angles are type 'uni' (uniform in [-pi, pi]) - Gaussian rank scaled for training
-        # Pt/Eta/Mass/MET are continuous
+        # All Cartesian features are continuous
         self.features = {"colnames": {}}
         for feature in processed_features:
-            if 'Phi' in feature:
-                self.features["colnames"][feature] = "uni"
-            else:
-                self.features["colnames"][feature] = "cont"
+            self.features["colnames"][feature] = "cont"
         
         # Add all SMEFT weight columns if loading weights (cols 15-18: sm, linear, quadratic, full)
         if self.load_weights:
@@ -185,7 +181,7 @@ class ttzNpyProcessor(NpyProcessor):
         # File path - new ATLAS processed file with physics objects already identified
         file_path_1 = "/project/atlas/users/kdevries/EventLoop/ttZ_for_Melle_tree.root"
 
-        # Required branches - load cylindrical coordinates directly from ROOT file
+        # Required branches - read pt/eta/phi directly from ROOT.
         branches_to_load = [
             'Z_Lepton1_Pt', 'Z_Lepton1_Eta', 'Z_Lepton1_Phi',
             'Z_Lepton2_Pt', 'Z_Lepton2_Eta', 'Z_Lepton2_Phi',
@@ -203,6 +199,10 @@ class ttzNpyProcessor(NpyProcessor):
         for file_path in [file_path_1]:
             with uproot.open(file_path) as file_ttz:
                 tree_ttz = file_ttz["Events"]
+                available_branches = set(tree_ttz.keys())
+                missing = [b for b in branches_to_load if b not in available_branches]
+                if missing:
+                    raise KeyError(f"Missing required ROOT branches: {missing}")
                 data = tree_ttz.arrays(branches_to_load, library="np")
                 if self.load_weights:
                     # Load smeft_weights with awkward to handle ragged arrays, extract only needed indices
@@ -224,14 +224,12 @@ class ttzNpyProcessor(NpyProcessor):
             logging.info(f"Processing {n_events} events from {file_path}")
 
             # Build output array with vectorized numpy stacking (no Python for loop).
-            # This avoids the enormous per-element Python object overhead of a list-of-lists
-            # approach (~24 bytes/float vs 4 bytes for float32), saving several GB of RAM.
-            # Order: Z_Lepton1 (3) → Z_Lepton2 (3) → W_Lepton (3) → BJet (4) → MET (2) = 15 features
+            # Order: Z_Lepton1 (3) -> Z_Lepton2 (3) -> W_Lepton (3) -> BJet (4) -> MET (2) = 15 features
             columns = [
                 data['Z_Lepton1_Pt'],  data['Z_Lepton1_Eta'], data['Z_Lepton1_Phi'],
                 data['Z_Lepton2_Pt'],  data['Z_Lepton2_Eta'], data['Z_Lepton2_Phi'],
                 data['W_Lepton_Pt'],   data['W_Lepton_Eta'],  data['W_Lepton_Phi'],
-                data['BJet_Pt'],       data['BJet_Eta'],       data['BJet_Phi'],      data['BJet_Mass'],
+                data['BJet_Pt'],       data['BJet_Eta'],      data['BJet_Phi'], data['BJet_Mass'],
                 data['MET'],           data['MET_phi'],
             ]
             if self.load_weights:
@@ -239,7 +237,7 @@ class ttzNpyProcessor(NpyProcessor):
                 # Weight indices for ttz (from ml/data/ttz/cHt_weight_indices.txt):
                 #   122: cHt_m5p0 (cHt = -5.0)
                 #   124: cHt_p5p0 (cHt = +5.0)
-                # Column layout: 15=sm, 16=linear, 17=quadratic, 18=full
+                # Column layout after 15 feature columns: 15=sm, 16=linear, 17=quadratic, 18=full
                 # Indices already extracted via awkward arrays above (handles ragged arrays correctly)
                 w_sm       = data['eventWeight']                              # col 15
                 w_plus     = w_plus_raw                                       # cHt = +5.0  (col 18)
@@ -253,13 +251,13 @@ class ttzNpyProcessor(NpyProcessor):
             logging.info(f"  Loaded {len(self.x)} events (all events in file)")
 
             if self.load_weights:
-                logging.info(f"Kept {len(self.x)} events with cylindrical coordinates and all 4 weight columns")
+                logging.info(f"Kept {len(self.x)} events with pt/eta/phi coordinates and all 4 weight columns")
             else:
-                logging.info(f"Kept {len(self.x)} events with cylindrical coordinates")
+                logging.info(f"Kept {len(self.x)} events with pt/eta/phi coordinates")
             all_filtered_data.append(self.x) 
 
         dataset = np.concatenate(all_filtered_data, axis=0)
-        logging.info(f"Final ttz dataset shape with cylindrical coordinates: {dataset.shape}")
+        logging.info(f"Final ttz dataset shape with pt/eta/phi coordinates: {dataset.shape}")
         if self.load_weights:
             logging.info(f"Shape: {dataset.shape[0]} events, 15 features + 4 weight columns = {dataset.shape[1]} total")
         

@@ -49,18 +49,19 @@ LOG_FILE = LOGS_DIR / f"train_all_weights_{datetime.now().strftime('%Y%m%d_%H%M%
 # ---------------------------------------------------------------------------
 CONDOR_JOB_PREFIX = "mafmademog"
 CONDOR_QUEUE      = "medium" # Default queue; can be overridden with --queue
-CONDOR_N_NODES    = 1
+CONDOR_N_NODES    = 8
 CONDOR_N_GPUS     = 1
 CONDOR_MEMORY_MB  = 64000
 
 VENV_ACTIVATE = str(PROJECT_ROOT / "venv311" / "bin" / "activate")
 
-# Paths whose old log/sub files are cleaned before new submissions
+# Paths whose old run logs are cleaned before new submissions.
+# Do NOT delete condor wrapper scripts in condor/mveldijk/condorsub, because
+# queued jobs may still reference those absolute paths at execute time.
 CLEANUP_PATTERNS = [
-    str(PROJECT_ROOT / "ml" / "custom" / "ttz" / "run" / f"{CONDOR_JOB_PREFIX}*"),
-    str(PROJECT_ROOT / "ml" / "custom" / "ttz" / "run" / "condor" / "mveldijk" / "condorsub" / "*"),
-    str(PROJECT_ROOT / "condor" / "mveldijk" / "condorsub" / f"{CONDOR_JOB_PREFIX}*"),
-    str(PROJECT_ROOT / "condor" / "mveldijk" / "condorsub" / "enviromentvariables*"),
+    str(PROJECT_ROOT / "run" / f"{CONDOR_JOB_PREFIX}*.condorlog"),
+    str(PROJECT_ROOT / "run" / f"{CONDOR_JOB_PREFIX}*.log"),
+    str(PROJECT_ROOT / "run" / f"{CONDOR_JOB_PREFIX}*.stderr"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -115,7 +116,12 @@ def build_job_command(weight_type: str) -> str:
         f"data_config.weight_type={weight_type} "
         f"data_config.load_weights=True "
         f"data_config.use_weights=True "
-        f"training_config.use_sm_weights=True"
+        f"training_config.use_sm_weights=True "
+        # Request enough CPU threads to keep the GPU fed and avoid idle watchdog holds.
+        f"data_config.dataloader_config.num_workers=4 "
+        f"data_config.dataloader_config.pin_memory=True "
+        # Avoid long CPU-only tracker phases on batch nodes with GPU-idle watchdogs.
+        f"experiment_config.check_metrics_n_epoch=1000000"
     )
 
 
@@ -171,9 +177,9 @@ def main() -> None:
         help=f"Condor queue to use (default: {CONDOR_QUEUE}).",
     )
     parser.add_argument(
-        "--no-cleanup",
+        "--cleanup",
         action="store_true",
-        help="Skip removal of old condor log/submission files.",
+        help="Remove old mafmademog run logs before submitting (disabled by default).",
     )
     args = parser.parse_args()
 
@@ -187,8 +193,10 @@ def main() -> None:
     log.info(f"Condor queue  : {args.queue}")
     log.info("=" * 60)
 
-    if not args.no_cleanup:
+    if args.cleanup:
         cleanup_old_condor_files()
+    else:
+        log.info("Cleanup disabled by default; preserving historical files in run/.")
 
     results: dict[str, bool] = {}
     for weight_type in args.weight_types:

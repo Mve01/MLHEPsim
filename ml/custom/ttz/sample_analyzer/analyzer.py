@@ -16,6 +16,7 @@ from ml.custom.ttz.process_ttz_dataset import ttzFeatureSelector, ttzNpyProcesso
 
 # Import plotting and physics utilities
 from plotting import plot_feature_comparison
+from plotting import plot_correlation_diagnostics
 from physics_utils import (
     calculate_z_kinematics,
     calculate_w_kinematics,
@@ -56,30 +57,34 @@ class ttzSampleAnalyzer:
         # Load variables configuration
         with open(variables_json_path, 'r') as f:
             self.variables = json.load(f)
+        self.original_feature_order = list(self.variables['colnames'].keys())
         
-        # Load ORIGINAL unprocessed data directly for comparison.
-        # ttz_weights.npy has shape (N, 19): 15 physics features + 4 SMEFT weight columns.
-        original_data_path = "ml/data/ttz/ttz_weights.npy"
+        # Load comparison data directly from the configured cache.
+        # The current schema uses 15 physics features; some caches append 4 weight columns.
+        original_data_path = data_dir
         if not os.path.exists(original_data_path):
             raise FileNotFoundError(f"Original data file not found: {original_data_path}")
 
         full_data_with_weights = np.load(original_data_path)
         logging.info(f"Loaded original ttZ data with weights shape: {full_data_with_weights.shape}")
-        
-        # Extract the 15 physics feature columns first (needed before any filtering below)
-        full_data = full_data_with_weights[:, :15]
+
+        n_physics_features = len(self.variables['colnames'])
+        full_data = full_data_with_weights[:, :n_physics_features]
         logging.info(f"Extracted physics features shape: {full_data.shape}")
-        
-        # Extract weights for this model's weight type
-        # Weight columns: 15=sm, 16=linear, 17=quadratic, 18=full
+
+        # Extract weights for this model's weight type if appended columns are present.
         weight_col_map = {
-            "sm": 15,
-            "linear": 16, "linear_pos": 16, "linear_neg": 16,
-            "quadratic": 17, "quadratic_pos": 17, "quadratic_neg": 17,
-            "full": 18,
+            "sm": n_physics_features,
+            "linear": n_physics_features + 1,
+            "linear_pos": n_physics_features + 1,
+            "linear_neg": n_physics_features + 1,
+            "quadratic": n_physics_features + 2,
+            "quadratic_pos": n_physics_features + 2,
+            "quadratic_neg": n_physics_features + 2,
+            "full": n_physics_features + 3,
         }
         
-        if self.weight_type in weight_col_map:
+        if self.weight_type in weight_col_map and full_data_with_weights.shape[1] > weight_col_map[self.weight_type]:
             col_idx = weight_col_map[self.weight_type]
             raw_weights = full_data_with_weights[:, col_idx]
             
@@ -104,7 +109,10 @@ class ttzSampleAnalyzer:
             logging.info(f"  Weight stats: min={self.original_weights.min():.6e}, max={self.original_weights.max():.6e}, mean={self.original_weights.mean():.6e}")
         else:
             self.original_weights = None
-            logging.warning(f"Unknown weight_type '{self.weight_type}' — using unweighted comparison")
+            logging.warning(
+                f"Unknown or unavailable weight_type '{self.weight_type}' in data shape {full_data_with_weights.shape} "
+                "— using unweighted comparison"
+            )
         
         self.original_data = full_data
         logging.info(f"Using {full_data.shape[0]} events for comparison: shape {self.original_data.shape}")
@@ -121,16 +129,29 @@ class ttzSampleAnalyzer:
         
         # Storage for generated data
         self.generated_data = None
+
+    @staticmethod
+    def _align_feature_columns(data, source_features, target_features, label="data"):
+        """Return a view of data with columns reordered from source_features to target_features."""
+        source_set = set(source_features)
+        missing = [f for f in target_features if f not in source_set]
+        if missing:
+            raise KeyError(
+                f"Cannot align {label}: missing features in source ordering: {missing}"
+            )
+
+        idx_map = [source_features.index(f) for f in target_features]
+        return data[:, idx_map]
     
     def _setup_preprocessing(self):
         """Setup preprocessing pipeline and scalers."""
         # Load preprocessing config to match training setup
-        config_path = os.path.join(project_root, "ml/custom/ttz/config/flows/data_config.yaml")
+        config_path = os.path.join(project_root, "ml/custom/ttz/config/data_config.yaml")
         with open(config_path, 'r') as f:
             data_config = yaml.safe_load(f)
         preprocessing_config = data_config['data_config']['preprocessing']
         
-        # Get feature names (now only 'cont' and 'disc' types with Cartesian coordinates)
+        # Get feature names from current variables schema.
         features = [name for name, type_ in self.variables['colnames'].items() 
                    if type_ in ['cont', 'uni', 'disc']]  # Include all feature types
         
@@ -183,20 +204,21 @@ class ttzSampleAnalyzer:
             logging.warning("FALLBACK: Refitting scalers on full dataset (may cause distribution mismatch!)")
             
             # Fallback: refit scalers (not recommended - will cause CDF mismatch)
-            original_data_path = "ml/data/ttz/ttz_weights.npy"
+            original_data_path = self.data_dir
             if not os.path.exists(original_data_path):
                 raise FileNotFoundError(f"Original data file not found: {original_data_path}")
 
             original_data = np.load(original_data_path)
-            if original_data.shape[1] >= 15:
-                original_data = original_data[:, :15]
+            n_features = len(self.variables['colnames'])
+            if original_data.shape[1] >= n_features:
+                original_data = original_data[:, :n_features]
             logging.info(f"Loaded original ttZ data shape: {original_data.shape}")
             
             pre = Preprocessor(**preprocessing_config)
             _, self.selection, self.scalers = pre(original_data, self.selection)
         
-        # Remove weight column from selection to match model output dimensions
-        self.selection = self.selection[self.selection['feature'] != 'cHt_weight'].reset_index(drop=True)
+        # Remove any appended weight columns from selection to match generated model outputs.
+        self.selection = self.selection[~self.selection['feature'].str.startswith('cHt_weight')].reset_index(drop=True)
         logging.info(f"After removing weight: selection shape = {self.selection.shape}")
         n_cont = len(self.selection[self.selection['type'].isin(['cont', 'uni'])])
         n_disc = len(self.selection[self.selection['type'] == 'disc'])
@@ -208,13 +230,23 @@ class ttzSampleAnalyzer:
         # Use the feature order from selection dataframe
         self.selected_features = self.selection['feature'].tolist()
         
-        # Extract weight column if present
+        # Keep weight handling determined in __init__ (do not override here).
         logging.info(f"Checking for weights in data: shape = {self.original_data.shape}")
         print(f"\n=== Weight Extraction Debug ===")
         print(f"Original data shape: {self.original_data.shape}")
-        # ttz_weights.npy is sliced to 15 feature columns before this point.
-        # SMEFT reweighting plots use smeft_reweighting.py, not this analyzer.
-        self.original_weights = None
+        if self.original_weights is None:
+            logging.info("Analyzer comparison mode: unweighted MC reference")
+            print("No MC weights attached to comparison data")
+        else:
+            logging.info(
+                "Analyzer comparison mode: weighted MC reference "
+                f"(n={len(self.original_weights)}, mean={np.mean(self.original_weights):.6e})"
+            )
+            print(
+                f"Using MC weights: n={len(self.original_weights)}, "
+                f"min={np.min(self.original_weights):.6e}, "
+                f"max={np.max(self.original_weights):.6e}"
+            )
         print("="*40 + "\n")
         
         # Note: Data is now created in physics-motivated order (1 Jet → 3 Leptons → MET) directly
@@ -306,7 +338,12 @@ class ttzSampleAnalyzer:
             os.makedirs(figures_dir, exist_ok=True)
             output_path = os.path.join(figures_dir, 'feature_comparison.png')
         
-        real_data = self.original_data
+        real_data = self._align_feature_columns(
+            self.original_data,
+            self.original_feature_order,
+            self.selected_features,
+            label="real_data",
+        )
         gen_data = self.generated_data
         features = self.selected_features.copy()
         
@@ -363,8 +400,29 @@ class ttzSampleAnalyzer:
             real_weights=self.original_weights,
             weight_type=self.weight_type
         )
+
+    def plot_correlation_diagnostics(self, output_path=None, bins_1d=60, bins_2d=60):
+        """Plot focused correlation diagnostics used to debug higher-order observables."""
+        if self.generated_data is None:
+            raise ValueError("No generated data available. Call generate_samples() first.")
+
+        if output_path is None:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            figures_dir = os.path.join(script_dir, 'figures')
+            os.makedirs(figures_dir, exist_ok=True)
+            output_path = os.path.join(figures_dir, 'correlation_diagnostics.png')
+
+        plot_correlation_diagnostics(
+            self.original_data,
+            self.generated_data,
+            self.selected_features,
+            output_path,
+            real_weights=self.original_weights,
+            bins_1d=bins_1d,
+            bins_2d=bins_2d,
+        )
         
-    def plot_all(self, include_derived=True, figures_dir=None):
+    def plot_all(self, include_derived=True, include_correlation_diagnostics=True, figures_dir=None):
         """
         Generate all comparison plots.
         
@@ -372,6 +430,8 @@ class ttzSampleAnalyzer:
         ----------
         include_derived : bool
             Whether to include derived Z kinematics variables
+        include_correlation_diagnostics : bool
+            Whether to generate DeltaEta/DeltaPhi correlation diagnostics
         figures_dir : str or Path, optional
             Directory to save figures. Defaults to sample_analyzer/figures/.
         """
@@ -380,7 +440,11 @@ class ttzSampleAnalyzer:
             figures_dir = str(figures_dir)
             os.makedirs(figures_dir, exist_ok=True)
             output_path = os.path.join(figures_dir, 'feature_comparison.png')
+            corr_output_path = os.path.join(figures_dir, 'correlation_diagnostics.png')
         else:
             output_path = None  # plot_feature_comparison will use its own default
+            corr_output_path = None
         self.plot_feature_comparison(output_path=output_path, include_derived=include_derived)
+        if include_correlation_diagnostics:
+            self.plot_correlation_diagnostics(output_path=corr_output_path)
         print("Plots saved successfully!")

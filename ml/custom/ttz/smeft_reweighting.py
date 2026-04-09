@@ -81,8 +81,8 @@ FEATURE_NAMES = [
     'Z_Lepton1_Pt', 'Z_Lepton1_Eta', 'Z_Lepton1_Phi',
     'Z_Lepton2_Pt', 'Z_Lepton2_Eta', 'Z_Lepton2_Phi',
     'W_Lepton_Pt',  'W_Lepton_Eta',  'W_Lepton_Phi',
-    'BJet_Pt',      'BJet_Eta',       'BJet_Phi',     'BJet_Mass',
-    'MET',          'MET_phi',
+    'BJet_Pt',      'BJet_Eta',      'BJet_Phi',      'BJet_Mass',
+    'MET',          'MET_Phi',
 ]
 
 
@@ -140,6 +140,52 @@ def load_module(model_name: str, device: str = 'cpu'):
     return module
 
 
+def _find_model_artifact_by_run_id(run_id: str) -> str:
+    """Resolve an MLflow run_id to a local model artifact URI.
+
+    Expected layout:
+      mlruns/<experiment_id>/<run_id>/artifacts/model
+    """
+    mlruns_dir = PROJECT_ROOT / "mlruns"
+    if not mlruns_dir.exists():
+        raise FileNotFoundError(f"MLflow directory not found: {mlruns_dir}")
+
+    for exp_dir in mlruns_dir.iterdir():
+        if not exp_dir.is_dir():
+            continue
+        model_dir = exp_dir / run_id / "artifacts" / "model"
+        if model_dir.exists():
+            return f"file://{model_dir.resolve()}"
+
+    raise FileNotFoundError(
+        f"Could not resolve run_id '{run_id}' under {mlruns_dir}. "
+        "Expected mlruns/<experiment_id>/<run_id>/artifacts/model"
+    )
+
+
+def load_module_from_run_id(run_id: str, device: str = 'cpu'):
+    """Load a Lightning module directly from an MLflow run_id artifact."""
+    import torch
+
+    mlflow.set_tracking_uri(f"file://{PROJECT_ROOT / 'mlruns'}")
+    model_uri = _find_model_artifact_by_run_id(run_id)
+    log.info(f"Loading model from run_id={run_id} on {device} from: {model_uri}")
+
+    dev = torch.device(device)
+    module = mlflow.pytorch.load_model(model_uri, map_location=dev)
+    module = module.to(dev)
+    module.model.eval()
+
+    # Keep explicit Python-side device attributes consistent with module.to(...)
+    if hasattr(module.model, 'device'):
+        module.model.device = dev
+    inner_flow = module.model.model
+    if hasattr(inner_flow, 'device'):
+        inner_flow.device = dev
+
+    return module
+
+
 # ---------------------------------------------------------------------------
 # Step 2 – Normalisation constants Z_k
 # ---------------------------------------------------------------------------
@@ -157,7 +203,12 @@ def compute_z_normalisations(root_file_path: str) -> dict:
 
     with uproot.open(root_file_path) as f:
         tree = f["Events"]
-        data = tree.arrays(['eventWeight', 'smeft_weights'], library='ak')
+        needed = ['eventWeight', 'smeft_weights']
+        available = set(tree.keys())
+        missing = [b for b in needed if b not in available]
+        if missing:
+            raise KeyError(f"Missing required ROOT branches for Z constants: {missing}")
+        data = tree.arrays(needed, library='ak')
 
     log.info(f"  Total events: {len(data['eventWeight'])}")
 
@@ -200,7 +251,7 @@ def compute_z_normalisations(root_file_path: str) -> dict:
 
 def load_root_features_and_weights(root_file_path: str):
     """
-    Load the 15 physics features and weight components from ROOT file.
+    Load the 15 physics features (with direct phi) and weight components from ROOT file.
     
     Returns
     -------
@@ -227,6 +278,11 @@ def load_root_features_and_weights(root_file_path: str):
     feat_branches = [b for b in branches_to_load if b != 'smeft_weights']
     with uproot.open(root_file_path) as f:
         tree = f["Events"]
+        available = set(tree.keys())
+        needed = feat_branches + ['smeft_weights']
+        missing = [b for b in needed if b not in available]
+        if missing:
+            raise KeyError(f"Missing required ROOT branches for feature loading: {missing}")
         data = tree.arrays(feat_branches, library='np')
         smeft_ak = tree.arrays(['smeft_weights'], library='ak')['smeft_weights']
 
@@ -239,13 +295,13 @@ def load_root_features_and_weights(root_file_path: str):
         for key in data:
             data[key] = data[key][valid_mask]
 
-    # Extract features (15)
+    # Extract features (15) with direct phi representation.
     x_features = np.column_stack([
-        data['Z_Lepton1_Pt'],  data['Z_Lepton1_Eta'], data['Z_Lepton1_Phi'],
-        data['Z_Lepton2_Pt'],  data['Z_Lepton2_Eta'], data['Z_Lepton2_Phi'],
-        data['W_Lepton_Pt'],   data['W_Lepton_Eta'],  data['W_Lepton_Phi'],
-        data['BJet_Pt'],       data['BJet_Eta'],       data['BJet_Phi'],      data['BJet_Mass'],
-        data['MET'],           data['MET_phi'],
+        data['Z_Lepton1_Pt'], data['Z_Lepton1_Eta'], data['Z_Lepton1_Phi'],
+        data['Z_Lepton2_Pt'], data['Z_Lepton2_Eta'], data['Z_Lepton2_Phi'],
+        data['W_Lepton_Pt'],  data['W_Lepton_Eta'],  data['W_Lepton_Phi'],
+        data['BJet_Pt'],      data['BJet_Eta'],      data['BJet_Phi'],      data['BJet_Mass'],
+        data['MET'],          data['MET_phi'],
     ]).astype(np.float32)
 
     # Extract weights
@@ -344,9 +400,65 @@ def compute_log_probs(module, x_scaled: np.ndarray, label: str,
     return log_p.astype(np.float64)
 
 
+def filter_finite_rows(x_scaled: np.ndarray,
+                       log_p_sm: np.ndarray,
+                       log_p_lin_pos: np.ndarray,
+                       log_p_lin_neg: np.ndarray,
+                       log_p_quad_pos: np.ndarray,
+                       log_p_quad_neg: np.ndarray):
+    """Drop rows with NaN/Inf in samples or any model log-probability."""
+    mask = np.isfinite(x_scaled).all(axis=1)
+    for arr in (log_p_sm, log_p_lin_pos, log_p_lin_neg, log_p_quad_pos, log_p_quad_neg):
+        mask &= np.isfinite(arr)
+
+    n_total = len(mask)
+    n_bad = int((~mask).sum())
+    if n_bad:
+        frac = 100.0 * n_bad / max(1, n_total)
+        log.warning(f"Dropping {n_bad}/{n_total} ({frac:.6f}%) non-finite rows before ratio computation")
+
+    return (
+        x_scaled[mask],
+        log_p_sm[mask],
+        log_p_lin_pos[mask],
+        log_p_lin_neg[mask],
+        log_p_quad_pos[mask],
+        log_p_quad_neg[mask],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Step 5 – Log density ratios
 # ---------------------------------------------------------------------------
+
+def _log_ratio_diagnostics(name: str, arr: np.ndarray, exp_clip: float = 80.0, indent: str = "") -> None:
+    """Log robust diagnostics for heavy-tailed log-ratio arrays.
+
+    Raw min/std can be dominated by a handful of outliers and look alarming.
+    This summary emphasises the bulk distribution and reports how many values
+    would be clipped by the exp() safeguard in get_weights().
+    """
+    arr = np.asarray(arr)
+    n = int(arr.size)
+    if n == 0:
+        log.warning(f"{indent}{name}: empty array")
+        return
+
+    q01, q1, q50, q99, q9999 = np.percentile(arr, [0.01, 1, 50, 99, 99.99])
+    clipped_low = int(np.sum(arr < -exp_clip))
+    clipped_high = int(np.sum(arr > exp_clip))
+    frac_low = 100.0 * clipped_low / n
+    frac_high = 100.0 * clipped_high / n
+
+    log.info(
+        f"{indent}{name}: median={q50:.3f}  p1={q1:.3f}  p99={q99:.3f}  "
+        f"p0.01={q01:.3f}  p99.99={q9999:.3f}"
+    )
+    log.info(
+        f"{indent}{name}: clip<-{exp_clip:.0f}: {clipped_low}/{n} ({frac_low:.6f}%)  "
+        f"clip>{exp_clip:.0f}: {clipped_high}/{n} ({frac_high:.6f}%)"
+    )
+
 
 def compute_log_ratios(log_p_sm,
                        log_p_lin_pos, log_p_lin_neg,
@@ -369,7 +481,7 @@ def compute_log_ratios(log_p_sm,
                       ("log_r_lin_neg",  log_r_lin_neg),
                       ("log_r_quad_pos", log_r_quad_pos),
                       ("log_r_quad_neg", log_r_quad_neg)]:
-        log.info(f"{name} : mean={arr.mean():.3f}, std={arr.std():.3f}")
+        _log_ratio_diagnostics(name, arr)
     return log_r_lin_pos, log_r_lin_neg, log_r_quad_pos, log_r_quad_neg
 
 
@@ -403,11 +515,18 @@ def get_weights(c: float, Z: dict,
     space and is physically meaningful.  The sum of all weights (proportional
     to the total cross section) should remain positive for a valid EFT point.
     """
+    # Clip exponents to avoid overflow from rare extreme tails.
+    exp_clip = 80.0
+    r_lin_pos = np.exp(np.clip(log_r_lin_pos, -exp_clip, exp_clip))
+    r_lin_neg = np.exp(np.clip(log_r_lin_neg, -exp_clip, exp_clip))
+    r_quad_pos = np.exp(np.clip(log_r_quad_pos, -exp_clip, exp_clip))
+    r_quad_neg = np.exp(np.clip(log_r_quad_neg, -exp_clip, exp_clip))
+
     unnorm = (Z["sm"]
-              + c    * (Z["linear_pos"]    * np.exp(log_r_lin_pos)
-                        - Z["linear_neg"]  * np.exp(log_r_lin_neg))
-              + c**2 * (Z["quadratic_pos"] * np.exp(log_r_quad_pos)
-                        - Z["quadratic_neg"] * np.exp(log_r_quad_neg)))
+              + c    * (Z["linear_pos"]    * r_lin_pos
+                        - Z["linear_neg"]  * r_lin_neg)
+              + c**2 * (Z["quadratic_pos"] * r_quad_pos
+                        - Z["quadratic_neg"] * r_quad_neg))
 
     neg = (unnorm < 0).sum()
     if neg:
@@ -470,64 +589,112 @@ def get_range_limits(data, percentile_range=0.1):
 
 def compute_derived_features(x_phys: np.ndarray):
     """
-    Compute derived higher-order features from the 15 base kinematic features.
+    Compute derived higher-order features from base kinematic features.
 
     Base feature layout
     -------------------
-    0-2 : Z_Lepton1  (Pt, Eta, Phi)
-    3-5 : Z_Lepton2  (Pt, Eta, Phi)
-    6-8 : W_Lepton   (Pt, Eta, Phi)
-    9-12: BJet       (Pt, Eta, Phi, Mass)
-    13  : MET
-    14  : MET_phi
+    Supports both representations to preserve backwards compatibility:
+    - pt/eta/phi:  Z_Lepton1, Z_Lepton2, W_Lepton, BJet(+Mass), MET(+Phi)
+    - Cartesian:   Z_Lepton1, Z_Lepton2, W_Lepton, BJet(+Mass), MET(Px,Py)
 
-    Derived quantities
-    ------------------
-    Z_pt, Z_eta, Z_mass, Z_deltaR  : from two massless Z-leptons
-    W_boson_pt                      : 2D vector sum W-lepton + MET
-    top_pt                          : 2D vector sum b-jet + W-lepton + MET (transverse approx)
-    Z_over_top_pt                   : Z_pt / top_pt
+    Derived quantities (matched to sample_analyzer)
+    -----------------------------------------------
+    Z_Pt, Z_Eta, Z_Phi, Z_Mass, Z_DeltaR : from two massless Z-leptons
+    W_Pt, W_Phi, W_MT                     : from W-lepton + MET (transverse)
+    Top_Pt, Top_Phi, Top_MT               : from b-jet + W (transverse approximation)
     """
-    zl1_pt, zl1_eta, zl1_phi = x_phys[:, 0],  x_phys[:, 1],  x_phys[:, 2]
-    zl2_pt, zl2_eta, zl2_phi = x_phys[:, 3],  x_phys[:, 4],  x_phys[:, 5]
-    wl_pt,              wl_phi = x_phys[:, 6],               x_phys[:, 8]
-    bj_pt,              bj_phi = x_phys[:, 9],               x_phys[:, 11]
-    met,    met_phi            = x_phys[:, 13], x_phys[:, 14]
+    if len(FEATURE_NAMES) >= 4 and FEATURE_NAMES[0].endswith('_Pt'):
+        # pt/eta/phi representation.
+        zl1_pt, zl1_eta, zl1_phi = x_phys[:, 0], x_phys[:, 1], x_phys[:, 2]
+        zl2_pt, zl2_eta, zl2_phi = x_phys[:, 3], x_phys[:, 4], x_phys[:, 5]
+        wl_pt, wl_eta, wl_phi = x_phys[:, 6], x_phys[:, 7], x_phys[:, 8]
+        bj_pt, bj_eta, bj_phi = x_phys[:, 9], x_phys[:, 10], x_phys[:, 11]
+        met_pt, met_phi = x_phys[:, 13], x_phys[:, 14]
+
+        zl1_px = zl1_pt * np.cos(zl1_phi)
+        zl1_py = zl1_pt * np.sin(zl1_phi)
+        zl1_pz = zl1_pt * np.sinh(zl1_eta)
+
+        zl2_px = zl2_pt * np.cos(zl2_phi)
+        zl2_py = zl2_pt * np.sin(zl2_phi)
+        zl2_pz = zl2_pt * np.sinh(zl2_eta)
+
+        wl_px = wl_pt * np.cos(wl_phi)
+        wl_py = wl_pt * np.sin(wl_phi)
+        wl_pz = wl_pt * np.sinh(wl_eta)
+
+        bj_px = bj_pt * np.cos(bj_phi)
+        bj_py = bj_pt * np.sin(bj_phi)
+        bj_pz = bj_pt * np.sinh(bj_eta)
+
+        met_px = met_pt * np.cos(met_phi)
+        met_py = met_pt * np.sin(met_phi)
+    else:
+        # Already in Cartesian representation.
+        zl1_px, zl1_py, zl1_pz = x_phys[:, 0], x_phys[:, 1], x_phys[:, 2]
+        zl2_px, zl2_py, zl2_pz = x_phys[:, 3], x_phys[:, 4], x_phys[:, 5]
+        wl_px, wl_py, wl_pz = x_phys[:, 6], x_phys[:, 7], x_phys[:, 8]
+        bj_px, bj_py, bj_pz = x_phys[:, 9], x_phys[:, 10], x_phys[:, 11]
+        met_px, met_py = x_phys[:, 13], x_phys[:, 14]
 
     # --- Z boson (massless leptons) ---
-    zl1_px = zl1_pt * np.cos(zl1_phi);  zl1_py = zl1_pt * np.sin(zl1_phi)
-    zl1_pz = zl1_pt * np.sinh(zl1_eta); zl1_E  = zl1_pt * np.cosh(zl1_eta)
-    zl2_px = zl2_pt * np.cos(zl2_phi);  zl2_py = zl2_pt * np.sin(zl2_phi)
-    zl2_pz = zl2_pt * np.sinh(zl2_eta); zl2_E  = zl2_pt * np.cosh(zl2_eta)
+    zl1_E = np.sqrt(np.clip(zl1_px**2 + zl1_py**2 + zl1_pz**2, 0.0, None))
+    zl2_E = np.sqrt(np.clip(zl2_px**2 + zl2_py**2 + zl2_pz**2, 0.0, None))
 
-    Z_px = zl1_px + zl2_px;  Z_py = zl1_py + zl2_py
-    Z_pz = zl1_pz + zl2_pz;  Z_E  = zl1_E  + zl2_E
+    Z_px = zl1_px + zl2_px
+    Z_py = zl1_py + zl2_py
+    Z_pz = zl1_pz + zl2_pz
+    Z_E = zl1_E + zl2_E
     Z_p  = np.sqrt(Z_px**2 + Z_py**2 + Z_pz**2)
 
     Z_pt   = np.sqrt(Z_px**2 + Z_py**2)
+    Z_phi  = np.arctan2(Z_py, Z_px)
     Z_eta  = np.arctanh(np.clip(Z_pz / np.clip(Z_p, 1e-9, None), -1 + 1e-7, 1 - 1e-7))
     Z_mass = np.sqrt(np.clip(Z_E**2 - Z_p**2, 0.0, None))
 
+    zl1_p = np.sqrt(zl1_px**2 + zl1_py**2 + zl1_pz**2)
+    zl2_p = np.sqrt(zl2_px**2 + zl2_py**2 + zl2_pz**2)
+    zl1_eta = np.arctanh(np.clip(zl1_pz / np.clip(zl1_p, 1e-9, None), -1 + 1e-7, 1 - 1e-7))
+    zl2_eta = np.arctanh(np.clip(zl2_pz / np.clip(zl2_p, 1e-9, None), -1 + 1e-7, 1 - 1e-7))
+    zl1_phi = np.arctan2(zl1_py, zl1_px)
+    zl2_phi = np.arctan2(zl2_py, zl2_px)
     dphi_ll = (zl1_phi - zl2_phi + np.pi) % (2 * np.pi) - np.pi
-    Z_deltaR = np.sqrt((zl1_eta - zl2_eta)**2 + dphi_ll**2)
+    Z_deltaR = np.sqrt((zl1_eta - zl2_eta) ** 2 + dphi_ll ** 2)
 
     # --- W boson transverse (lepton + MET 2D vector sum) ---
-    W_px = wl_pt * np.cos(wl_phi) + met * np.cos(met_phi)
-    W_py = wl_pt * np.sin(wl_phi) + met * np.sin(met_phi)
-    W_boson_pt = np.sqrt(W_px**2 + W_py**2)
+    W_px = wl_px + met_px
+    W_py = wl_py + met_py
+    W_pt = np.sqrt(W_px**2 + W_py**2)
+    W_phi = np.arctan2(W_py, W_px)
+
+    wl_pt = np.sqrt(wl_px**2 + wl_py**2)
+    met_pt = np.sqrt(met_px**2 + met_py**2)
+    wl_phi = np.arctan2(wl_py, wl_px)
+    met_phi = np.arctan2(met_py, met_px)
+    dphi_w = np.arctan2(np.sin(wl_phi - met_phi), np.cos(wl_phi - met_phi))
+    W_mt = np.sqrt(np.clip(2.0 * wl_pt * met_pt * (1.0 - np.cos(dphi_w)), 0.0, None))
 
     # --- Top quark transverse (b-jet + W transverse) ---
-    bj_px = bj_pt * np.cos(bj_phi)
-    bj_py = bj_pt * np.sin(bj_phi)
-    top_pt = np.sqrt((bj_px + W_px)**2 + (bj_py + W_py)**2)
+    top_px = W_px + bj_px
+    top_py = W_py + bj_py
+    top_pt = np.sqrt(top_px**2 + top_py**2)
+    top_phi = np.arctan2(top_py, top_px)
 
-    # --- Z / top pT ratio ---
-    Z_over_top_pt = Z_pt / np.clip(top_pt, 1e-3, None)
+    bj_pt = np.sqrt(bj_px**2 + bj_py**2)
+    bj_phi = np.arctan2(bj_py, bj_px)
+    dphi_tb = np.arctan2(np.sin(W_phi - bj_phi), np.cos(W_phi - bj_phi))
+    top_mt = np.sqrt(np.clip((W_mt + bj_pt)**2 + 2.0 * W_pt * bj_pt * (1.0 - np.cos(dphi_tb)), 0.0, None))
 
-    derived = np.column_stack([Z_pt, Z_eta, Z_mass, Z_deltaR,
-                               W_boson_pt, top_pt, Z_over_top_pt])
-    derived_names = ['Z_pt', 'Z_eta', 'Z_mass', 'Z_deltaR',
-                     'W_boson_pt', 'top_pt', 'Z_over_top_pt']
+    derived = np.column_stack([
+        Z_pt, Z_eta, Z_phi, Z_mass, Z_deltaR,
+        W_pt, W_phi, W_mt,
+        top_pt, top_phi, top_mt,
+    ])
+    derived_names = [
+        'Z_Pt', 'Z_Eta', 'Z_Phi', 'Z_Mass', 'Z_DeltaR',
+        'W_Pt', 'W_Phi', 'W_MT',
+        'Top_Pt', 'Top_Phi', 'Top_MT',
+    ]
 
     return np.concatenate([x_phys, derived], axis=1), FEATURE_NAMES + derived_names
 
@@ -546,6 +713,7 @@ def plot_reweighted_distributions(x_phys: np.ndarray,
                                   x_root: np.ndarray = None,
                                   w_decomp: dict = None,
                                   x_root_sm: np.ndarray = None,
+                                  w_root_sm: np.ndarray = None,
                                   log_y: bool = False):
     """
     For each c in c_values, create a figure with one panel per feature.
@@ -554,17 +722,22 @@ def plot_reweighted_distributions(x_phys: np.ndarray,
       - lower plot : ratio generated(c) / ROOT(c)  with a reference line at 1
 
     When x_root_sm and x_root are both provided, shows:
-      - **Blue**: ROOT file SM data (unweighted, ground truth baseline)
+      - **Blue**: ROOT file SM data weighted by ROOT eventWeight (SM baseline)
       - **Red**: Generated/reweighted samples from flow
       - **Green**: ROOT file data weighted to c value (ground truth at c)
       - **Ratio**: Generated(c) / ROOT(c) — validates model accuracy
 
     Histograms
     ----------
-    SM (blue)         : unweighted, density=False (raw counts), then divided by N*dx manually.
+    SM (blue)         : ROOT eventWeight-weighted, density=False, then divided by sum(w_sm)*dx.
     Generated (red)   : weighted by w (sum to 1), density=False, then divided by dx manually.
     ROOT c-weighted (green): weighted by w_root, density=False, then divided by N_root*dx.
     This avoids numpy's density=True conflating normalisation with weighting.
+
+    Binning policy
+    --------------
+    If ROOT SM data is supplied (x_root_sm), histogram ranges are fixed from ROOT-SM
+    only, so reruns with different generated samples use identical bin edges.
     """
     from matplotlib.gridspec import GridSpec
 
@@ -578,19 +751,24 @@ def plot_reweighted_distributions(x_phys: np.ndarray,
     _UNITS = {}
     for name in feature_names:
         lower = name.lower()
-        if any(k in lower for k in ('_pt', 'met', '_mass')):
+        if any(k in lower for k in ('_pt', '_px', '_py', '_pz', 'met', '_mass')):
             _UNITS[name] = '[GeV]'
-        elif '_phi' in lower or 'phi' in lower:
-            _UNITS[name] = '[rad]'
         else:
             _UNITS[name] = ''   # Eta is dimensionless
 
-    # Diagnostics: are the density ratios actually non-trivial?
+    # Diagnostics: robust summaries and clip impact for heavy-tailed log-ratios.
     for name, arr in [("log_r_lin_pos",  log_r_lin_pos),
                       ("log_r_lin_neg",  log_r_lin_neg),
                       ("log_r_quad_pos", log_r_quad_pos),
                       ("log_r_quad_neg", log_r_quad_neg)]:
-        log.info(f"  {name} std={arr.std():.4f}  min={arr.min():.3f}  max={arr.max():.3f}")
+        _log_ratio_diagnostics(name, arr, indent="  ")
+
+    if x_root_sm is not None:
+        log.info("Using ROOT-basis fixed binning: ranges from ROOT(SM) percentiles.")
+        if w_root_sm is None:
+            log.warning("x_root_sm provided without w_root_sm; falling back to unweighted ROOT SM baseline.")
+        elif len(w_root_sm) != len(x_root_sm):
+            raise ValueError(f"Length mismatch: len(w_root_sm)={len(w_root_sm)} != len(x_root_sm)={len(x_root_sm)}")
 
     for c in c_values:
         w = get_weights(c, Z, log_r_lin_pos, log_r_lin_neg, log_r_quad_pos, log_r_quad_neg)   # (N,)
@@ -629,25 +807,35 @@ def plot_reweighted_distributions(x_phys: np.ndarray,
             # If ROOT SM provided, use it (ground truth); otherwise use generated samples
             if x_root_sm is not None:
                 feat_data_sm = x_root_sm[:, i]
-                N_sm = len(x_root_sm)
-                sm_source = "ROOT"
+                sm_weights = w_root_sm if w_root_sm is not None else None
+                sm_source = "ROOT eventWeight"
             else:
                 feat_data_sm = x_phys[:, i]
-                N_sm = N
+                sm_weights = None
                 sm_source = "Generated"
 
             # Generated (reweighted) data
             feat_data = x_phys[:, i]
-            x_min, x_max = get_range_limits(feat_data)
+
+            # Fix binning to ROOT-SM basis (deterministic across reruns).
             if x_root_sm is not None:
-                x_min = min(x_min, get_range_limits(feat_data_sm)[0])
-                x_max = max(x_max, get_range_limits(feat_data_sm)[1])
+                x_min, x_max = get_range_limits(feat_data_sm)
+            else:
+                x_min, x_max = get_range_limits(feat_data)
+
             dx = (x_max - x_min) / bins
 
             # --- histograms (manual normalisation avoids numpy density ambiguity) ---
             # SM reference (blue)
-            counts_sm, edges = np.histogram(feat_data_sm, bins=bins, range=(x_min, x_max))
-            hist_sm = counts_sm / (N_sm * dx)                 # unweighted PDF
+            counts_sm, edges = np.histogram(feat_data_sm, bins=bins, range=(x_min, x_max), weights=sm_weights)
+            if sm_weights is None:
+                norm_sm = max(len(feat_data_sm), 1)
+            else:
+                norm_sm = float(np.sum(sm_weights))
+                if np.isclose(norm_sm, 0.0):
+                    log.warning("ROOT SM eventWeight sum is ~0 for this plot; using unweighted normalization fallback.")
+                    norm_sm = max(len(feat_data_sm), 1)
+            hist_sm = counts_sm / (norm_sm * dx)
 
             # Generated reweighted (red)
             counts_c, _ = np.histogram(feat_data, bins=edges, weights=w)
@@ -665,7 +853,7 @@ def plot_reweighted_distributions(x_phys: np.ndarray,
 
             # Main panel
             ax_main.fill_between(bc, hist_sm, step='mid',
-                                 color='royalblue', alpha=0.35, label=f'SM {sm_source} (unweighted)')
+                                 color='royalblue', alpha=0.35, label=f'SM {sm_source}')
             ax_main.step(bc, hist_sm, color='royalblue', where='mid', lw=1.5)
             ax_main.step(bc, hist_c,  color='crimson',   where='mid', lw=2,
                          label=f'Generated $c={c:+.1f}$')
@@ -773,6 +961,16 @@ def main():
                         help='Load pre-computed density ratios from disk (skip sampling/encoding)')
     parser.add_argument('--device', type=str, default='cpu',
                         help='Device for model inference: cpu or cuda (default: cpu)')
+    parser.add_argument('--sm-run-id', type=str, default=None,
+                        help='Optional MLflow run_id for SM model artifact')
+    parser.add_argument('--linear-pos-run-id', type=str, default=None,
+                        help='Optional MLflow run_id for linear_pos model artifact')
+    parser.add_argument('--linear-neg-run-id', type=str, default=None,
+                        help='Optional MLflow run_id for linear_neg model artifact')
+    parser.add_argument('--quadratic-pos-run-id', type=str, default=None,
+                        help='Optional MLflow run_id for quadratic_pos model artifact')
+    parser.add_argument('--quadratic-neg-run-id', type=str, default=None,
+                        help='Optional MLflow run_id for quadratic_neg model artifact')
     args = parser.parse_args()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -806,27 +1004,71 @@ def main():
             RATIOS_FILE.unlink()
             args.load_ratios = False   # fall through to recompute block below
 
-    else:
-        # Step 1 – Find model names
-        log.info("\n--- Step 1: Finding model names ---")
-        name_sm        = find_model_name("sm")
-        name_lin_pos   = find_model_name("linear_pos")
-        name_lin_neg   = find_model_name("linear_neg")
-        name_quad_pos  = find_model_name("quadratic_pos")
-        name_quad_neg  = find_model_name("quadratic_neg")
+        # Reject corrupted cache files with NaN/Inf values.
+        has_nonfinite = (
+            (not np.isfinite(x_scaled).all())
+            or (not np.isfinite(log_r_lin_pos).all())
+            or (not np.isfinite(log_r_lin_neg).all())
+            or (not np.isfinite(log_r_quad_pos).all())
+            or (not np.isfinite(log_r_quad_neg).all())
+        )
+        if has_nonfinite:
+            log.warning("  Loaded ratios contain NaN/Inf — deleting stale file and recomputing.")
+            RATIOS_FILE.unlink()
+            args.load_ratios = False
 
-        # Step 1b – Load modules
+    else:
+        # Step 1 – Resolve model sources
+        use_run_ids = any([
+            args.sm_run_id,
+            args.linear_pos_run_id,
+            args.linear_neg_run_id,
+            args.quadratic_pos_run_id,
+            args.quadratic_neg_run_id,
+        ])
+
+        if use_run_ids:
+            log.info("\n--- Step 1: Resolving model sources (run_id override where provided) ---")
+            log.info(f"  [sm]            run_id: {args.sm_run_id if args.sm_run_id else 'latest registered model'}")
+            log.info(f"  [linear_pos]    run_id: {args.linear_pos_run_id if args.linear_pos_run_id else 'latest registered model'}")
+            log.info(f"  [linear_neg]    run_id: {args.linear_neg_run_id if args.linear_neg_run_id else 'latest registered model'}")
+            log.info(f"  [quadratic_pos] run_id: {args.quadratic_pos_run_id if args.quadratic_pos_run_id else 'latest registered model'}")
+            log.info(f"  [quadratic_neg] run_id: {args.quadratic_neg_run_id if args.quadratic_neg_run_id else 'latest registered model'}")
+        else:
+            log.info("\n--- Step 1: Finding model names ---")
+            name_sm        = find_model_name("sm")
+            name_lin_pos   = find_model_name("linear_pos")
+            name_lin_neg   = find_model_name("linear_neg")
+            name_quad_pos  = find_model_name("quadratic_pos")
+            name_quad_neg  = find_model_name("quadratic_neg")
+
+        # Step 1b – Load modules (run_id override or latest registered)
         log.info("\n--- Loading flow modules ---")
         log.info(f"Loading SM model (device={args.device}) ...")
-        module_sm       = load_module(name_sm,       device=args.device)
+        module_sm = (
+            load_module_from_run_id(args.sm_run_id, device=args.device)
+            if args.sm_run_id else load_module(name_sm, device=args.device)
+        )
         log.info(f"Loading linear_pos model ...")
-        module_lin_pos  = load_module(name_lin_pos,  device=args.device)
+        module_lin_pos = (
+            load_module_from_run_id(args.linear_pos_run_id, device=args.device)
+            if args.linear_pos_run_id else load_module(name_lin_pos, device=args.device)
+        )
         log.info(f"Loading linear_neg model ...")
-        module_lin_neg  = load_module(name_lin_neg,  device=args.device)
+        module_lin_neg = (
+            load_module_from_run_id(args.linear_neg_run_id, device=args.device)
+            if args.linear_neg_run_id else load_module(name_lin_neg, device=args.device)
+        )
         log.info(f"Loading quadratic_pos model ...")
-        module_quad_pos = load_module(name_quad_pos, device=args.device)
+        module_quad_pos = (
+            load_module_from_run_id(args.quadratic_pos_run_id, device=args.device)
+            if args.quadratic_pos_run_id else load_module(name_quad_pos, device=args.device)
+        )
         log.info(f"Loading quadratic_neg model ...")
-        module_quad_neg = load_module(name_quad_neg, device=args.device)
+        module_quad_neg = (
+            load_module_from_run_id(args.quadratic_neg_run_id, device=args.device)
+            if args.quadratic_neg_run_id else load_module(name_quad_neg, device=args.device)
+        )
 
         # Step 3 – Sample from SM flow
         log.info("\n--- Step 3: Sampling from SM flow ---")
@@ -839,6 +1081,12 @@ def main():
         log_p_lin_neg  = compute_log_probs(module_lin_neg,  x_scaled, "linear_neg")
         log_p_quad_pos = compute_log_probs(module_quad_pos, x_scaled, "quadratic_pos")
         log_p_quad_neg = compute_log_probs(module_quad_neg, x_scaled, "quadratic_neg")
+
+        # Guard against rare NaN/Inf outliers that would otherwise poison all weights.
+        x_scaled, log_p_sm, log_p_lin_pos, log_p_lin_neg, log_p_quad_pos, log_p_quad_neg = filter_finite_rows(
+            x_scaled, log_p_sm, log_p_lin_pos, log_p_lin_neg, log_p_quad_pos, log_p_quad_neg
+        )
+        log.info(f"  Using {len(x_scaled)} finite samples for ratio computation")
 
         # Step 5 – Log density ratios
         log.info("\n--- Step 5: Computing log density ratios ---")
@@ -903,6 +1151,7 @@ def main():
         x_root=x_root_plot,
         w_decomp=w_root_decomp,
         x_root_sm=x_root_plot,
+        w_root_sm=w_root_sm,
     )
 
     # Per-c comparison plots (log scale)
@@ -917,6 +1166,7 @@ def main():
         x_root=x_root_plot,
         w_decomp=w_root_decomp,
         x_root_sm=x_root_plot,
+        w_root_sm=w_root_sm,
         log_y=True,
     )
 

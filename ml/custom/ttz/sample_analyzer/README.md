@@ -1,30 +1,27 @@
 # ttZ Sample Analysis Tools
 
-This directory contains minimal tools for analyzing ttZ samples from generative models.
+This directory contains tools for analyzing ttZ samples from generative models.
 
 ## Overview
 
-This is a simplified analyzer for ttZ data (3 leptons + 1 jet + MET = 19 features). It focuses on:
+This analyzer validates ttZ data (3 leptons + 1 b-jet + MET = 15 features). It focuses on:
 - Loading trained models and generating samples
 - Comparing feature distributions between real and generated data
-- Basic correlation plots
-
-**Note**: This analyzer does NOT include complex physics calculations (mass reconstruction, top quark kinematics, etc.). It's designed for basic distribution validation.
+- Computing physics-based derived quantities (Z mass, W transverse mass, event kinematics)
+- Correlation analysis
 
 ## File Structure
 
 ```
 sample_analyzer/
-├── analyzer_simple.py       # Main ttzSampleAnalyzer class
-├── plotting.py              # Clean ttZ plotting functions
-├── run_analysis.py          # Main execution script
-├── figures/                 # Output directory for plots
-├── analyzer_drellyan_old.py # (Legacy - old Drell-Yan analyzer)
-├── plotting_drellyan_old.py # (Legacy - old Drell-Yan plots)
-├── mass_calculator.py       # (Legacy from Drell-Yan - not used)
-├── pt_calculator.py         # (Legacy from Drell-Yan - not used)
-├── system_calculator.py     # (Legacy from Drell-Yan - not used)
-└── README.md                # This file
+├── analyzer.py                    # Main ttzSampleAnalyzer class
+├── physics_utils.py              # Physics calculations (Z, W, top kinematics)
+├── plotting.py                   # ttZ plotting functions
+├── run_analysis.py               # Main execution script
+├── run_smeft_vs_sm_comparison.py # SMEFT vs SM reweighting comparison
+├── smeft_vs_sm_plotting.py       # SMEFT comparison visualization
+├── figures/                      # Output directory for plots
+└── README.md                     # This file
 ```
 
 ## Quick Start
@@ -38,16 +35,9 @@ python ml/custom/ttz/sample_analyzer/run_analysis.py
 This will:
 1. Load the trained model and preprocessed ttZ data
 2. Generate samples from the model
-3. Create comparison plots:
-   - Feature distributions (24 features)
-   - Correlation plots
-
-### Use as a Library
-
-```python
-from ml.custom.ttz.sample_analyzer.analyzer import ttzSampleAnalyzer
-
-# Initialize
+3. Create comparison plots for all 15 features
+4. Compute and display physics-based derived quantities
+5. Save plots to `figures/`
 analyzer = ttzSampleAnalyzer(
     data_dir="ml/data/ttz/ttz.npy",
     variables_json_path="ml/data/ttz/variables.json",
@@ -72,41 +62,59 @@ analyzer.plot_correlation_plots(gridsize=200)
 
 ## Module Documentation
 
+## Physics-Based Validation
+
+The analyzer computes derived physics quantities to validate model quality beyond individual feature distributions:
+
+### Z Boson Kinematics
+From Z_Lepton1 and Z_Lepton2:
+- **Z_Pt**: Transverse momentum
+- **Z_Eta**: Pseudorapidity
+- **Z_Phi**: Azimuthal angle
+- **Z_Mass**: Invariant mass (should peak at ~91.2 GeV)
+- **Z_DeltaR**: Angular separation between leptons
+
+### W Boson Kinematics
+From W_Lepton and MET:
+- **W_Pt**: Transverse momentum
+- **W_Phi**: Azimuthal angle
+- **W_MT**: Transverse mass (should peak at ~80 GeV)
+
+### Top Quark Kinematics
+From BJet, W_Lepton, and MET:
+- **Top_Pt**: Transverse momentum
+- **Top_Phi**: Azimuthal angle
+- **Top_MT**: Transverse mass (should peak at ~160 GeV)
+
+These derived quantities provide stringent tests of whether the model has learned proper correlations between particles and physics constraints.
+
+## Module Documentation
+
 ### `analyzer.py`
 Main analyzer class that orchestrates the analysis pipeline.
 
 **Key Methods:**
 - `generate_samples()` - Generate samples from trained model
-- `compute_masses()` - Calculate invariant masses (for full model)
-- `compute_pt_negative()` - Calculate PT of negative muon from mass (for reduced model)
-- `plot_feature_comparison()` - Plot 1D feature distributions with ratio plots
-- `plot_invariant_mass()` - Plot invariant mass distribution
-- `plot_pt_negative_comparison()` - Plot PT negative distribution
-- `plot_correlation_plots()` - Plot 2D correlations with difference maps
+- `plot_feature_comparison()` - Plot individual feature distributions
+- Additional methods for physics validation
 
-### `mass_calculator.py`
-Physics calculations for dimuon invariant mass.
+### `physics_utils.py`
+Physics calculations for particle kinematics and invariant masses.
 
 **Functions:**
-- `calculate_dimuon_invariant_mass()` - Compute M from kinematics using M² = 2·PT₁·PT₂·(cosh(Δη) - cos(Δφ))
-- `compute_masses_for_dataset()` - Helper to compute for full dataset
-
-### `pt_calculator.py`
-Physics calculations for negative muon transverse momentum.
-
-**Functions:**
-- `calculate_pt_negative_muon()` - Compute PT₂ from mass and kinematics using PT₂ = M²/(2·PT₁·(cosh(Δη) - cos(Δφ)))
-- `compute_pt_negative_for_dataset()` - Helper to compute for full dataset
+- `calculate_invariant_mass()` - Compute invariant mass from 4-momenta
+- `calculate_delta_r()` - Angular separation between particles
+- `calculate_z_kinematics()` - Z boson 4-momentum and kinematics
+- `calculate_w_kinematics()` - W boson transverse mass and kinematics
+- `calculate_top_kinematics()` - Top quark transverse mass and kinematics
 
 ### `plotting.py`
-All visualization functions using 2D histograms exclusively.
+All visualization functions.
 
 **Functions:**
-- `plot_feature_comparison()` - Compare real vs generated features with Generated/Real ratio plots
-- `plot_invariant_mass()` - Compare invariant mass distributions
-- `plot_pt_negative_comparison()` - Compare PT negative distributions with outlier exclusion
-- `plot_correlation_comparison()` - 2D correlation plots with difference maps (auto-detects Lead/Sub vs Pos/Neg naming)
-- `get_range_limits()` - Helper for plot ranges using percentile-based outlier exclusion
+- `plot_feature_comparison()` -Compare real vs generated features
+- Physics quantity comparison plots
+- Correlation analysis
 
 ## Configuration
 

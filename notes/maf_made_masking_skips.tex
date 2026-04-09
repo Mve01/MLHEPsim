@@ -1,0 +1,297 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{hyperref}
+\usepackage{enumitem}
+
+\title{MAF/MADE Residual and Masking Notes (TTZ)}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Scope of This Note}
+This note is only about the architecture discussion: how masking works in MADE,
+how residual/skip layers are implemented in the TTZ flow model, and how these
+pieces combine inside MAF/MAFMADEMOG.
+
+The active TTZ settings discussed were:
+\begin{itemize}[leftmargin=*]
+\item \texttt{num\_flows = 5}
+\item \texttt{num\_hidden\_layers = 4}
+\item \texttt{hidden\_layer\_dim = 384}
+\item \texttt{res\_layers\_in\_block = 2}
+\item \texttt{conv1x1 = True}
+\item \texttt{maf\_residuals = True}
+\end{itemize}
+
+\section{Big Picture: What Problem MAF Solves}
+Normalizing flows learn an invertible map between data $x$ and latent $u$ with
+tractable log-density:
+\[
+\log p_X(x) = \log p_U(u) + \log\left|\det\frac{\partial u}{\partial x}\right|.
+\]
+In MAF, each block is autoregressive, so the Jacobian is triangular and
+its log-determinant is cheap to compute.
+
+The model gains flexibility by stacking multiple autoregressive transforms,
+interleaved with invertible mixing/permutation layers.
+
+\section{How Autoregressive Masking Works in MADE}
+\subsection*{Core rule}
+Each output dimension $i$ is only allowed to depend on previous dimensions in a
+chosen order. In this codebase the ordering is sequential by default.
+
+The masking function constructs binary masks so that illegal connections are
+exactly zeroed out in \texttt{MaskedLinear}:
+\[
+\text{out} = W \odot M \; x + b.
+\]
+So masking is not a soft regularizer. It is a hard structural constraint.
+
+\subsection*{Degree-based construction}
+The implementation assigns each neuron a degree $m$ and allows connections only
+from earlier/equal degrees according to the MADE rules:
+\begin{itemize}[leftmargin=*]
+\item hidden-layer masks use a \emph{non-strict} condition ($\ge$),
+\item output mask uses a \emph{strict} condition ($>$).
+\end{itemize}
+
+That strict final mask is what guarantees output $i$ cannot use its own input
+$x_i$ directly in the autoregressive parameter prediction.
+
+\section{Gaussian Parameterization Used in MAF Blocks}
+The Gaussian MADE variants output two vectors per feature:
+\[
+\mu(x_{<i}),\quad \alpha(x_{<i})
+\]
+where $\alpha$ is log-scale. The transform used in normalizing direction is:
+\[
+u_i = (x_i - \mu_i)\exp(-\alpha_i).
+\]
+Then:
+\[
+\log\left|\det\frac{\partial u}{\partial x}\right| = -\sum_i \alpha_i.
+\]
+
+Sampling (inverse direction) is sequential in feature index because each
+$x_i$ needs already-generated previous coordinates.
+
+\section{Residual Blocks: What ``Skipping'' Means Here}
+\subsection*{Form of the residual update}
+Inside \texttt{ResMaskedLinear}, the block computes:
+\[
+y = x + f(x),
+\]
+where $f$ is a masked stack of nonlinear layers.
+
+This is the skip connection we discussed. The identity path ($x$) is always
+present, and the block learns a correction $f(x)$ instead of a full remapping.
+
+\subsection*{Why this helps}
+Residual form improves optimization because:
+\begin{itemize}[leftmargin=*]
+\item gradients can flow through the identity branch,
+\item deep stacks are less prone to representational collapse,
+\item near-identity behavior is easy early in training.
+\end{itemize}
+
+\subsection*{Important implementation detail: zero initialization}
+The final layer inside each residual mini-network is zero-initialized in
+\texttt{ResMaskedLinear} (weights and bias).
+
+Consequence at initialization:
+\[
+f(x) \approx 0 \quad\Rightarrow\quad y \approx x.
+\]
+So each residual block starts near identity and gradually learns structured
+deviations. This typically stabilizes early training dynamics.
+
+\section{Two Depth Knobs You Asked About}
+In \texttt{GaussianResMADE(input\_size, k, n\_blocks, l)}:
+\begin{itemize}[leftmargin=*]
+\item \texttt{n\_blocks} is the number of residual blocks.
+\item \texttt{l} is the number of masked layers inside each residual block.
+\end{itemize}
+
+Mapping to TTZ config in this repository:
+\begin{itemize}[leftmargin=*]
+\item \texttt{n\_blocks = num\_hidden\_layers = 4}
+\item \texttt{l = res\_layers\_in\_block = 2}
+\item \texttt{k = hidden\_layer\_dim = 384}
+\end{itemize}
+
+So one autoregressive block contains 4 residual units, each with 2 internal
+masked layers, all at width 384.
+
+\section{How One Full MAFMADEMOG Block Is Built}
+For each of the \texttt{num\_flows} repeats, the code adds:
+\begin{enumerate}[leftmargin=*]
+\item optional \texttt{BatchNormFlow},
+\item either \texttt{Conv1x1PLU} (if \texttt{conv1x1=True}) or \texttt{ReverseFlow},
+\item an autoregressive transform: \texttt{GaussianResMADE} if residuals are enabled.
+\end{enumerate}
+
+With your settings, this means each repeat uses batch norm, then invertible
+1x1 mixing, then residual autoregression.
+
+\section{Why 1x1 Invertible Mixing Is Useful with Autoregression}
+Autoregressive layers are order-sensitive. Without mixing/permutation, later
+blocks repeatedly see very similar coordinate ordering constraints.
+
+The invertible 1x1 linear transform rotates/mixes channels between blocks,
+which changes what each next autoregressive layer sees as ``earlier'' vs
+``later'' information content.
+
+Intuition: masking gives triangular structure; 1x1 mixing prevents that
+structure from becoming too rigid across depth.
+
+\section{Forward vs Inverse Cost Asymmetry (Important Practical Point)}
+In autoregressive flows:
+\begin{itemize}[leftmargin=*]
+\item density evaluation in normalizing direction is parallel over dimensions,
+\item sampling in inverse direction is sequential over dimensions.
+\end{itemize}
+
+This is why MAF is typically efficient for likelihood training and comparatively
+slower for generation than coupling-based alternatives.
+
+\section{How Skip Connections and Masks Interact}
+A common confusion is whether residual skips break autoregressive validity.
+They do not, because:
+\begin{itemize}[leftmargin=*]
+\item the residual branch itself uses masked linear layers,
+\item the identity add $x + f(x)$ is within hidden feature space of fixed width,
+\item the output projection still uses the autoregressive output mask.
+\end{itemize}
+
+So residual design improves optimization capacity while preserving the same
+autoregressive dependency constraints.
+
+\section{Concrete Parameter Counting Intuition (Qualitative)}
+Increasing these knobs does the following:
+\begin{itemize}[leftmargin=*]
+\item \texttt{hidden\_layer\_dim} increases per-layer capacity strongly.
+\item \texttt{num\_hidden\_layers} increases number of residual units per MAF block.
+\item \texttt{res\_layers\_in\_block} deepens each residual unit.
+\item \texttt{num\_flows} repeats the whole (mixing + autoregressive) macro-block.
+\end{itemize}
+
+In practice, these knobs trade off expressivity, train time, memory use, and
+stability. Residual and near-identity initialization are key enablers when
+depth is increased.
+
+\section{Practical Reading of Your Current Setup}
+Given your TTZ settings (5 flow repeats, residual MADE blocks, width 384,
+4 residual blocks each with 2 internal masked layers, and invertible 1x1 mixing):
+\begin{itemize}[leftmargin=*]
+\item the model has substantial capacity for nontrivial correlations,
+\item residualization should help keep training stable at this depth,
+\item 1x1 mixing should reduce repeated-order artifacts across flow repeats.
+\end{itemize}
+
+This is exactly the architecture pattern one would choose when simple
+autoregressive stacks are underfitting correlation structure.
+
+\section{Worked Example: One Event Through One Flow Repeat}
+This section gives a concrete step-by-step pass for a single event vector
+$x\in\mathbb{R}^{15}$ (TTZ input dimension in the current setup).
+
+Assume we are in one repeat of the flow stack with:
+\begin{enumerate}[leftmargin=*]
+\item \texttt{BatchNormFlow},
+\item \texttt{Conv1x1PLU},
+\item \texttt{GaussianResMADE}.
+\end{enumerate}
+
+\subsection*{Step 1: Batch normalization transform}
+Input event is $x^{(0)}=x$.
+Batch norm applies a per-feature affine normalization:
+\[
+x^{(1)}_j = w_j\frac{x^{(0)}_j-\mu_j}{\sqrt{\sigma_j^2+\epsilon}} + b_j.
+\]
+This contributes an additive log-Jacobian term
+$\log|\det J_{\text{BN}}|$ that is easy to compute from per-feature scales.
+
+Interpretation: this step re-centers/re-scales channels so later layers operate
+in a numerically friendlier regime.
+
+\subsection*{Step 2: Invertible 1x1 linear mixing}
+Then \texttt{Conv1x1PLU} applies an invertible linear map:
+\[
+x^{(2)} = x^{(1)}W,
+\]
+where $W$ is parameterized through PLU factors for stable invertibility and
+cheap log-determinant:
+\[
+\log|\det J_{\text{mix}}| = \log|\det W|.
+\]
+
+Interpretation: coordinates are rotated/mixed so the next autoregressive module
+does not always see the same axis-aligned dependency pattern.
+
+\subsection*{Step 3: Residual autoregressive map (GaussianResMADE)}
+Now \texttt{GaussianResMADE} receives $x^{(2)}$ and predicts two 15-vectors:
+\[
+\mu(x^{(2)}_{<i}),\quad \alpha(x^{(2)}_{<i}).
+\]
+
+Each hidden computation inside this network uses masked linear layers. Residual
+blocks apply hidden-state updates of the form:
+\[
+h \leftarrow h + f(h),
+\]
+with masked $f$. Because the final masked layer in each residual unit is
+zero-initialized, each unit starts near identity at initialization.
+
+The autoregressive transform for each feature is:
+\[
+u_i = (x^{(2)}_i - \mu_i)\exp(-\alpha_i).
+\]
+Collecting all features gives $u^{(3)}$ and log-Jacobian term:
+\[
+\log|\det J_{\text{AR}}| = -\sum_i \alpha_i.
+\]
+
+\subsection*{Step 4: Total contribution of this repeat}
+For this one repeat, output is $u^{(3)}$, and the repeat contributes:
+\[
+\log|\det J_{\text{repeat}}|=
+\log|\det J_{\text{BN}}|+
+\log|\det J_{\text{mix}}|+
+\log|\det J_{\text{AR}}|.
+\]
+
+This output is then fed to the next repeat (out of 5 total in your config).
+
+\subsection*{What changes during sampling (inverse direction)}
+During generation, the inverse order is used inside each repeat:
+\begin{enumerate}[leftmargin=*]
+\item inverse autoregressive step (sequential in feature index),
+\item inverse 1x1 mixing,
+\item inverse batch norm.
+\end{enumerate}
+
+The sequential part is specifically the autoregressive inverse:
+\[
+x_i = u_i\exp(\alpha_i) + \mu_i,
+\]
+where $\mu_i,\alpha_i$ depend on already reconstructed earlier coordinates.
+
+This is the core reason sampling is slower than density evaluation in MAF.
+
+\section{Minimal Mental Model}
+If you want one compact memory aid:
+
+\begin{quote}
+MADE masks decide \emph{who can talk to whom}. Residual skips decide
+\emph{how hard optimization has to work}. 1x1 invertible mixing decides
+\emph{whether each new autoregressive block sees a fresh coordinate geometry}.
+\end{quote}
+
+Together, they give an expressive but still tractable flow for high-dimensional
+physics features.
+
+\end{document}

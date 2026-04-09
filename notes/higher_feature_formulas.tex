@@ -1,0 +1,105 @@
+\documentclass{article}
+\usepackage{amsmath}
+\begin{document}
+
+\section*{Higher-Feature Formulas}
+
+\subsection*{Dependency Table}
+\begin{center}
+\begin{tabular}{|l|p{9.2cm}|c|}
+\hline
+Higher feature & Depends on base features & Count \\
+\hline
+$Z_{P_T}$ & $p_{T,\ell_1},\ \eta_{\ell_1},\ \phi_{\ell_1},\ p_{T,\ell_2},\ \eta_{\ell_2},\ \phi_{\ell_2}$ & 6 \\
+\hline
+$Z_{\eta}$ & $p_{T,\ell_1},\ \eta_{\ell_1},\ \phi_{\ell_1},\ p_{T,\ell_2},\ \eta_{\ell_2},\ \phi_{\ell_2}$ & 6 \\
+\hline
+$Z_{\Phi}$ & $p_{T,\ell_1},\ \eta_{\ell_1},\ \phi_{\ell_1},\ p_{T,\ell_2},\ \eta_{\ell_2},\ \phi_{\ell_2}$ & 6 \\
+\hline
+$Z_{\mathrm{Mass}}$ & $p_{T,\ell_1},\ \eta_{\ell_1},\ \phi_{\ell_1},\ p_{T,\ell_2},\ \eta_{\ell_2},\ \phi_{\ell_2}$ & 6 \\
+\hline
+$Z_{\Delta R}$ & $\eta_{\ell_1},\ \phi_{\ell_1},\ \eta_{\ell_2},\ \phi_{\ell_2}$ & 4 \\
+\hline
+$W_{P_T}$ & $p_{T,\ell},\ \phi_{\ell},\ p_{T,\mathrm{miss}},\ \phi_{\mathrm{miss}}$ & 4 \\
+\hline
+$W_{\Phi}$ & $p_{T,\ell},\ \phi_{\ell},\ p_{T,\mathrm{miss}},\ \phi_{\mathrm{miss}}$ & 4 \\
+\hline
+$W_{M_T}$ & $p_{T,\ell},\ \phi_{\ell},\ p_{T,\mathrm{miss}},\ \phi_{\mathrm{miss}}$ & 4 \\
+\hline
+$\mathrm{Top}_{P_T}$ & $p_{T,\ell},\ \phi_{\ell},\ p_{T,\mathrm{miss}},\ \phi_{\mathrm{miss}},\ p_{T,b},\ \phi_b$ & 6 \\
+\hline
+$\mathrm{Top}_{\Phi}$ & $p_{T,\ell},\ \phi_{\ell},\ p_{T,\mathrm{miss}},\ \phi_{\mathrm{miss}},\ p_{T,b},\ \phi_b$ & 6 \\
+\hline
+$\mathrm{Top}_{M_T}$ & $p_{T,\ell},\ \phi_{\ell},\ p_{T,\mathrm{miss}},\ \phi_{\mathrm{miss}},\ p_{T,b},\ \phi_b$ & 6 \\
+\hline
+\end{tabular}
+\end{center}
+
+\[
+p_x = p_T\cos\phi, \qquad p_y = p_T\sin\phi, \qquad p_z = p_T\sinh\eta
+\]
+\[
+E = \sqrt{p_x^2 + p_y^2 + p_z^2}
+\]
+
+\subsection*{Z from two leptons $\ell_1,\ell_2$}
+\[
+\vec{p}_Z = \vec{p}_{\ell_1}+\vec{p}_{\ell_2}, \qquad E_Z = E_{\ell_1}+E_{\ell_2}
+\]
+\[
+Z_{P_T}=\sqrt{p_{Zx}^2+p_{Zy}^2},
+\qquad
+Z_{\Phi}=\operatorname{atan2}(p_{Zy},p_{Zx}),
+\qquad
+Z_{\eta}=\operatorname{artanh}\!\left(\frac{p_{Zz}}{\sqrt{p_{Zx}^2+p_{Zy}^2+p_{Zz}^2}}\right)
+\]
+\[
+Z_{\mathrm{Mass}} = \sqrt{\max\!\left(E_Z^2-\left(p_{Zx}^2+p_{Zy}^2+p_{Zz}^2\right),0\right)}
+\]
+\[
+\text{(equivalent for massless leptons)}\qquad
+Z_{\mathrm{Mass}}^2 = 2\,p_{T,\ell_1}p_{T,\ell_2}\left(\cosh(\Delta\eta_{12})-\cos(\Delta\phi_{12})\right)
+\]
+\[
+\Delta\phi_{12}=\operatorname{atan2}(\sin(\phi_1-\phi_2),\cos(\phi_1-\phi_2)),
+\qquad
+Z_{\Delta R}=\sqrt{(\eta_1-\eta_2)^2+\Delta\phi_{12}^2}
+\]
+
+\subsection*{W (transverse) from lepton + MET}
+\[
+p_{Wx}=p_{\ell x}+p_{\mathrm{miss},x},
+\qquad
+p_{Wy}=p_{\ell y}+p_{\mathrm{miss},y}
+\]
+\[
+W_{P_T}=\sqrt{p_{Wx}^2+p_{Wy}^2},
+\qquad
+W_{\Phi}=\operatorname{atan2}(p_{Wy},p_{Wx})
+\]
+\[
+\Delta\phi_{\ell\nu}=\operatorname{atan2}(\sin(\phi_\ell-\phi_{\mathrm{miss}}),\cos(\phi_\ell-\phi_{\mathrm{miss}}))
+\]
+\[
+W_{M_T}=\sqrt{\max\!\left(2\,p_{T,\ell}\,p_{T,\mathrm{miss}}\,(1-\cos\Delta\phi_{\ell\nu}),0\right)}
+\]
+
+\subsection*{Top (transverse proxy) from $W$ + $b$-jet}
+\[
+p_{tx}=p_{Wx}+p_{bx},
+\qquad
+p_{ty}=p_{Wy}+p_{by}
+\]
+\[
+\mathrm{Top}_{P_T}=\sqrt{p_{tx}^2+p_{ty}^2},
+\qquad
+\mathrm{Top}_{\Phi}=\operatorname{atan2}(p_{ty},p_{tx})
+\]
+\[
+\Delta\phi_{Wb}=\operatorname{atan2}(\sin(\phi_W-\phi_b),\cos(\phi_W-\phi_b))
+\]
+\[
+\mathrm{Top}_{M_T}=\sqrt{\max\!\left((W_{M_T}+p_{T,b})^2+2\,W_{P_T}\,p_{T,b}\,(1-\cos\Delta\phi_{Wb}),0\right)}
+\]
+
+\end{document}

@@ -18,13 +18,8 @@ from ml.flows.models import (
     MADEMOG,
     MAF,
     MAFMADEMOG,
-    NICE,
     FlowModel,
-    Glow,
     MOGFlowModel,
-    PolynomialSplineFlow,
-    RealNVP,
-    RqSplineFlow,
 )
 from ml.flows.trackers import FlowTracker as Tracker
 
@@ -43,7 +38,7 @@ def _data_size_tier(n_train: int) -> tuple[str, float]:
       large  (≥ 1 000 000)  →  scale 1.00  (full default config)
       medium (≥   200 000)  →  scale 0.67
       small  (≥    50 000)  →  scale 0.50
-      tiny   (         < 50 000)  →  scale 0.33
+      tiny   (         < 50 000)  →  scale 0.20  (more aggressive for BSM weight subsets)
     """
     if n_train >= 1_000_000:
         return "large", 1.0
@@ -52,7 +47,7 @@ def _data_size_tier(n_train: int) -> tuple[str, float]:
     elif n_train >= 50_000:
         return "small", 0.50
     else:
-        return "tiny", 0.33
+        return "tiny", 0.20
 
 
 def _scale_config_to_data(n_train: int, model_conf: dict, data_module) -> dict:
@@ -182,7 +177,7 @@ class FinalEpochLogger(Callback):
 
 
 @timeit(unit="min")
-@hydra.main(config_path="config/flows/", config_name="main_config", version_base=None)
+@hydra.main(config_path="config/", config_name="main_config", version_base=None)
 def main(config):
     setup_logger()
     
@@ -266,20 +261,8 @@ def main(config):
     if 'n_mixtures' in model_conf:
         logging.info(f"n_mixtures: {model_conf['n_mixtures']}")
 
-    # https://arxiv.org/abs/1410.8516
-    if model_conf["model_name"].lower() == "nice":
-        model = NICE(model_conf, data_conf, experiment_conf)
-
-    # https://arxiv.org/abs/1605.08803
-    elif model_conf["model_name"].lower() == "realnvp":
-        model = RealNVP(model_conf, data_conf, experiment_conf)
-
-    # https://arxiv.org/abs/1807.03039
-    elif model_conf["model_name"].lower() == "glow":
-        model = Glow(model_conf, data_conf, experiment_conf)
-
     # https://arxiv.org/abs/1705.07057
-    elif model_conf["model_name"].lower() == "maf":
+    if model_conf["model_name"].lower() == "maf":
         model = MAF(model_conf, data_conf, experiment_conf)
 
     elif model_conf["model_name"].lower() == "mafmademog":
@@ -289,16 +272,8 @@ def main(config):
     elif model_conf["model_name"].lower() == "mademog":
         model = MADEMOG(model_conf, data_conf, experiment_conf)
 
-    # https://arxiv.org/abs/1808.03856
-    elif model_conf["model_name"].lower() == "polysplines":
-        model = PolynomialSplineFlow(model_conf, data_conf, experiment_conf)
-
-    # https://arxiv.org/abs/1906.04032
-    elif model_conf["model_name"].lower() == "rqsplines":
-        model = RqSplineFlow(model_conf, data_conf, experiment_conf)
-
     else:
-        raise NameError
+        raise NameError(f"Unknown model: {model_conf['model_name']}")
 
     tracker = Tracker(experiment_conf, tracker_path="ml/custom/ttz/metrics")
 
@@ -311,6 +286,22 @@ def main(config):
     else:
         flow = MOGFlowModel(model_conf, training_conf, data_conf, model, tracker=tracker)
 
+    # Adjust early stopping patience for small datasets: reduce gradient noise impact
+    # by giving more tolerance when training data is scarce (high variance in validation loss)
+    base_patience = (
+        experiment_conf["epochs"]
+        if training_conf["early_stop_patience"] is None
+        else training_conf["early_stop_patience"]
+    )
+    if n_train < 5000:
+        actual_patience = min(base_patience + 5, 20)  # Allow 5 more epochs, cap at 20
+        logging.info(
+            f"Small dataset ({n_train} events): increasing early stop patience from "
+            f"{base_patience} to {actual_patience} to reduce gradient noise impact."
+        )
+    else:
+        actual_patience = base_patience
+
     # define callbacks
     callbacks = [
         #TQDMProgressBar(),    # WARNING: Turn off when running on batch system to avoid huge log files
@@ -318,11 +309,7 @@ def main(config):
         EarlyStopping(
             monitor="val_loss",
             mode="min",
-            patience=(
-                experiment_conf["epochs"]
-                if training_conf["early_stop_patience"] is None
-                else training_conf["early_stop_patience"]
-            ),
+            patience=actual_patience,
         ),
         ModelCheckpoint(save_weights_only=False, mode="min", monitor="val_loss"),
         PeriodicEpochLogger(log_every_n_epochs=5),

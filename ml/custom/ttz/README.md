@@ -5,33 +5,28 @@ This directory contains scripts for training normalizing flow models on ttZ phys
 ## Overview
 
 Main training script:
-- **`main_flows.py`** - Model with 19 features (1 b-jet × 5 + 3 leptons × 4 + MET × 2)
+- **`main_flows.py`** - Model with 15 features (1 b-jet × 4 + 3 leptons × 3 + MET × 2)
 
 This script trains generative flow models on ttZ data (trilepton channel) and supports multiple flow architectures with comprehensive tracking, logging, and model checkpointing.
 
-**Feature Layout (19 features)**:
-- **Jet1** (5): Pt, Eta, Phi, Mass, BTag (highest BTag score jet, likely b-jet)
-- **Lepton1** (4): Pt, Eta, Phi, Charge (Z lepton, higher pT)
-- **Lepton2** (4): Pt, Eta, Phi, Charge (Z lepton, lower pT)
-- **Lepton3** (4): Pt, Eta, Phi, Charge (W lepton)
+**Feature Layout (15 features)**:
+- **BJet** (4): Pt, Eta, Phi, Mass (b-jet with highest BTag score)
+- **Z_Lepton1** (3): Pt, Eta, Phi (Z lepton, higher pT)
+- **Z_Lepton2** (3): Pt, Eta, Phi (Z lepton, lower pT)
+- **W_Lepton** (3): Pt, Eta, Phi (W lepton from W boson decay)
 - **MET** (2): MET, MET_Phi
 
 ## Supported Flow Models
 
 The script supports the following normalizing flow architectures:
 
-- **NICE** - Non-linear Independent Components Estimation ([arXiv:1410.8516](https://arxiv.org/abs/1410.8516))
-- **RealNVP** - Real-valued Non-Volume Preserving transformations ([arXiv:1605.08803](https://arxiv.org/abs/1605.08803))
-- **Glow** - Generative Flow with Invertible 1x1 Convolutions ([arXiv:1807.03039](https://arxiv.org/abs/1807.03039))
 - **MAF** - Masked Autoregressive Flow ([arXiv:1705.07057](https://arxiv.org/abs/1705.07057))
-- **MAFMADEMOG** - Combination of MAF and MADEMOG
 - **MADEMOG** - Masked Autoregressive Density Estimation with Mixture of Gaussians ([arXiv:1306.0186](https://arxiv.org/abs/1306.0186))
-- **PolynomialSplineFlow** - Polynomial spline-based flows ([arXiv:1808.03856](https://arxiv.org/abs/1808.03856))
-- **RqSplineFlow** - Rational Quadratic Spline flows ([arXiv:1906.04032](https://arxiv.org/abs/1906.04032))
+- **MAFMADEMOG** - Combination of MAF and MADEMOG ⭐ **[Production Model]**
 
 ## Usage
 
-### Training ttZ Model (19 Features)
+### Training ttZ Model (15 Features)
 
 Train the model on ttZ trilepton events:
 
@@ -39,31 +34,33 @@ Train the model on ttZ trilepton events:
 python ml/custom/ttz/main_flows.py
 ```
 
-Uses `variables.json` located at `ml/data/ttz/variables.json` with 19 features:
+Uses `variables.json` located at `ml/data/ttz/variables.json` with 15 features:
 
-**Jets** (1 jet × 5 features):
-- `Jet1_Pt`, `Jet1_Eta`, `Jet1_Phi`, `Jet1_Mass`, `Jet1_BTag`
+**B-Jet** (1 jet × 4 features):
+- `BJet_Pt`, `BJet_Eta`, `BJet_Phi`, `BJet_Mass`
 
-**Leptons** (3 leptons × 4 features):
-- `Lepton1_Pt`, `Lepton1_Eta`, `Lepton1_Phi`, `Lepton1_Charge`
-- `Lepton2_Pt`, `Lepton2_Eta`, `Lepton2_Phi`, `Lepton2_Charge`
-- `Lepton3_Pt`, `Lepton3_Eta`, `Lepton3_Phi`, `Lepton3_Charge`
+**Leptons** (3 leptons × 3 features each):
+- `Z_Lepton1_Pt`, `Z_Lepton1_Eta`, `Z_Lepton1_Phi`
+- `Z_Lepton2_Pt`, `Z_Lepton2_Eta`, `Z_Lepton2_Phi`
+- `W_Lepton_Pt`, `W_Lepton_Eta`, `W_Lepton_Phi`
 
 **MET** (2 features):
 - `MET`, `MET_Phi`
 
-The reduced model tests whether the flow can learn to predict the missing PT from the mass and angular separations.
+This model can reconstruct Z boson kinematics from the two Z leptons and W boson transverse mass from the W lepton and MET.
 
 ### Custom Configuration
 
-Both scripts use Hydra for configuration management. Configuration files should be located in `ml/custom/ttz/config/flows/`. You can override parameters from the command line:
+The script uses Hydra for configuration management. Configuration files should be located in `ml/custom/ttz/config/`. You can override parameters from the command line:
 
 ```bash
 python ml/custom/ttz/main_flows.py \
-    model_config.model_name=mademog \
+    maf_made_mog.model_name=mademog \
     training_config.epochs=100 \
     experiment_config.seed=42
 ```
+
+Supported models: `maf`, `mademog`, `mafmademog`
 
 ## Configuration Structure
 
@@ -175,7 +172,7 @@ For example: `mademog_flow_model_gauss_rank`
 ## Example Workflow
 
 1. Prepare your ttZ data in `.npy` format in `ml/data/ttz/`
-2. Configure your experiment in `config/flows/main_config.yaml`
+2. Configure your experiment in `config/main_config.yaml`
 3. Run the training script
 4. Monitor training progress in MLFlow UI
 5. Retrieve the best model from the model registry

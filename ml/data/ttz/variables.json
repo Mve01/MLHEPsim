@@ -2,18 +2,18 @@
     "colnames": {
         "Z_Lepton1_Pt": "cont",
         "Z_Lepton1_Eta": "cont",
-        "Z_Lepton1_Phi": "uni",
+        "Z_Lepton1_Phi": "cont",
         "Z_Lepton2_Pt": "cont",
         "Z_Lepton2_Eta": "cont",
-        "Z_Lepton2_Phi": "uni",
+        "Z_Lepton2_Phi": "cont",
         "W_Lepton_Pt": "cont",
         "W_Lepton_Eta": "cont",
-        "W_Lepton_Phi": "uni",
+        "W_Lepton_Phi": "cont",
         "BJet_Pt": "cont",
         "BJet_Eta": "cont",
-        "BJet_Phi": "uni",
+        "BJet_Phi": "cont",
         "BJet_Mass": "cont",
         "MET": "cont",
-        "MET_Phi": "uni"
+        "MET_Phi": "cont"
     }
 }

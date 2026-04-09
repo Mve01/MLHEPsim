@@ -4580,3 +4580,682 @@ Running `smeft_reweighting.py` with 10M samples was prohibitively slow on CPU:
 - ✅ `--load-ratios` path still works unchanged (loads CPU model for inverse transform only)
 - ✅ Backward compatible: default `--device cpu` preserves existing interactive behaviour
 
+---
+
+## Entry 44: GitHub Upload, LLoCagenerator Backup, and Dataset Symlinks (2026-03-12)
+
+### GitHub Upload
+
+Committed and pushed all work since the last commit to branch `ttz-development` on
+`https://github.com/Mve01/MLHEPsim.git`.
+
+**Commit: "SMEFT pos/neg decomposition: 5-flow reweighting pipeline, notes, and cleanup"**
+
+New files added:
+- `ml/custom/ttz/smeft_reweighting.py` — 5-flow density ratio pipeline
+- `ml/custom/ttz/train_all_weights.py` — Condor submission for all 5 weight types
+- `ml/custom/ttz/plot_root_weights.py` — ROOT file kinematic histograms with cHt weighting
+- `ml/custom/ttz/plot_weight_contributions.py` — pos/neg weight decomposition visualisation
+- `ml/custom/ttz/run_smeft_analysis.py`, `test_weight_clipping.py`
+- `notes/pos_neg_weight_decomposition.tex` — full technical documentation of the 5-flow architecture
+- `notes/smeft_importance_reweighting.tex`
+- `mlruns` symlink
+
+Updated files: `ttz_dataset.py`, `main_flows.py`, `process_ttz_dataset.py`, `made_mog.py`,
+`sample_analyzer/analyzer.py`, `sample_analyzer/plotting.py`, `sample_analyzer/run_analysis.py`,
+`run/run_bash.sh`, `REFACTORING_LOG.md`
+
+`.gitignore` extended: added `venv311/` and `*.npz` exclusions (the 878 MB
+`density_ratios.npz` files were excluded to stay within GitHub's 100 MB file limit).
+
+### LLoCagenerator Backup
+
+A full copy of `/project/atlas/users/mveldijk/MLHEPsimtest` was made to
+`/project/atlas/users/mveldijk/LLoCagenerator` as a snapshot before beginning cleanup
+and refactoring of the codebase. The initial `cp -r` missed several items (entire
+`venv311/bin/`, `lib64`, `pyvenv.cfg`, root-level files, `condor/`, `logs/`) which were
+subsequently synced with `rsync -a` to produce an exact mirror.
+
+### Dataset Symlinks
+
+Large dataset files were moved from `/project` to `/data/atlas/users/mveldijk/datasets/`
+and replaced with symlinks in both `MLHEPsimtest` and `LLoCagenerator`, freeing ~2.65 GB
+from `/project`:
+
+| File | Size | Location in `/data/` |
+|------|------|----------------------|
+| `DRELLYAN_unpreprocessed.npy` | 1.7 GB | `/data/atlas/users/mveldijk/datasets/` |
+| `HIGGS_generated_MADEMOG_flow_model_gauss_rank.npy` | 687 MB | `/data/atlas/users/mveldijk/datasets/` |
+| `ttz_weights.npy` | 269 MB | `/data/atlas/users/mveldijk/datasets/` |
+| `HIGGS.npy` | 1.2 GB | already in `/data/` (pre-existing) |
+| `HIGGS.csv.gz` | 2.7 GB | already in `/data/` (pre-existing) |
+
+Symlinks in `ml/data/drellyan/`, `ml/data/higgs/`, and `ml/data/ttz/` in both project
+directories point to the shared `/data/` copies.
+
+---
+
+## Entry 45: SMEFT Reweighting NaN-Poisoning Guardrails (2026-03-18)
+
+### Problem
+
+After regenerating caches and retraining all five TTZ models, `smeft_reweighting.py` still produced
+pathological plots with `N_eff/N=nan` and `w_std=nan`.
+
+The run log (`logs/smeft_reweighting_20260317_192829.log`) showed:
+- `log p: mean=nan, std=nan` for all model evaluations
+- `log_r_* : mean=nan, std=nan`
+- ratio cache saved despite NaNs (`density_ratios.npz`), causing bad downstream plots
+
+### Root Cause
+
+The active models and scalers were confirmed to be in the new Cartesian feature space, so the earlier
+Pt/Eta/Phi schema mismatch was no longer the issue.
+
+The new failure mode was NaN poisoning:
+- rare non-finite rows in sampled/evaluated arrays propagated through ratio and weight computation
+- once any NaN reached normalization (`unnorm / unnorm.sum()`), all event weights became NaN
+
+### Changes Implemented
+
+File updated: `ml/custom/ttz/smeft_reweighting.py`
+
+1. Added non-finite row filtering before ratio computation
+- New helper: `filter_finite_rows(...)`
+- Drops rows where `x_scaled` or any `log_p_*` is non-finite
+- Logs dropped fraction for diagnostics
+
+2. Added ratio-cache corruption detection
+- In `--load-ratios` path, cache now triggers recomputation if any loaded array contains NaN/Inf
+- Existing degenerate-std check remains in place
+
+3. Added exponent overflow guard in weight construction
+- In `get_weights(...)`, `log_r` values are clipped before `exp(...)` to avoid rare tail overflows
+
+4. Operational cleanup
+- Removed stale `ml/custom/ttz/figures/smeft_reweighting/density_ratios.npz` so next run recomputes
+    ratios from scratch using the guarded path
+
+### Validation
+
+A local runtime probe with 500k samples (CUDA) after the patch showed:
+- finite sampling output (`x_scaled` fully finite)
+- finite `log p` for all five models
+- finite ratio arrays with non-trivial spreads:
+    - `log_r_lin_pos` std ~ 1.34
+    - `log_r_lin_neg` std ~ 1.41
+    - `log_r_quad_pos` std ~ 1.25
+    - `log_r_quad_neg` std ~ 2.31
+
+This confirms the NaN-poisoning pathway is now guarded and the ratio computation remains physically informative.
+
+---
+
+## Entry 46: Robust Log-Ratio Diagnostics + Condor GPU-Idle Mitigation (2026-03-24)
+
+### Problem
+
+Recent `smeft_reweighting` runs showed alarming ratio diagnostics, e.g. very large `std` and extremely low `min` values for
+`log_r_quad_neg`, `log_r_lin_pos`, and `log_r_lin_neg`.
+
+At the same time, one SM Condor training job was held with:
+- `GPU claimed but no GPU usage` (Code 26)
+
+### Root Cause
+
+1. Ratio logging used raw `std/min/max`, which can be dominated by extremely rare outliers in heavy-tailed log-ratio distributions.
+2. The tails were real but very sparse (tiny fractions of events), so the old logs overstated global instability.
+3. Condor GPU-idle holds were exacerbated by periodic tracker evaluation/plotting phases that are partly CPU-heavy and can trigger watchdog checks.
+
+### Changes Implemented
+
+#### A) Reweighting diagnostics made robust
+
+File updated: `ml/custom/ttz/smeft_reweighting.py`
+
+1. Added helper: `_log_ratio_diagnostics(name, arr, exp_clip=80.0, indent="")`
+- Logs robust bulk stats: `median`, `p1`, `p99`, `p0.01`, `p99.99`
+- Logs explicit clip impact at the same threshold used in `get_weights(...)` exponentiation
+    (`clip<-80`, `clip>80` counts and fractions)
+
+2. Replaced raw `mean/std` ratio summaries in `compute_log_ratios(...)` with robust diagnostics.
+
+3. Replaced plotting-stage `std/min/max` ratio diagnostics in `plot_reweighted_distributions(...)` with the same robust helper.
+
+Result: logs now separate bulk behavior from ultra-rare catastrophic tails and align diagnostics with the actual exponent clipping behavior used for weight construction.
+
+#### B) Condor training sweep made safer on GPU-idle watchdog nodes
+
+File updated: `ml/custom/ttz/train_all_weights.py`
+
+1. Added a Hydra override to submitted jobs:
+- `experiment_config.check_metrics_n_epoch=1000000`
+
+This effectively disables periodic tracker passes during batch training, reducing long CPU-heavy intervals that can appear as low GPU utilization to scheduler watchdogs.
+
+### Validation
+
+1. Static checks: no code errors reported for updated files.
+2. Model mapping sanity:
+- MLflow run params confirmed that loaded models still match intended `weight_type` values.
+3. Tail prevalence check on saved ratio cache (`density_ratios.npz`):
+- extreme values exist but are very rare (order `1e-6` to `1e-5` fractions below clip threshold), confirming a tail-diagnostics issue rather than broad failure.
+
+### Operational Notes
+
+1. Training logs will be less noisy (fewer periodic tracker plot/eval messages) but still retain epoch loss/patience and final checkpoint metrics.
+2. Reweighting logs now provide more actionable diagnostics for heavy-tailed ratio distributions without masking rare events.
+
+---
+
+## Entry 47: Reverted TTZ Feature Representation to Pt/Eta/Phi (2026-03-24)
+
+### Problem
+
+The recent TTZ pipeline had moved to Cartesian coordinates (Px/Py/Pz), but historical 10M-sample
+results and model artifacts were trained in the original pt/eta/phi representation. This caused
+mismatch when trying to rerun `smeft_reweighting.py` with older MLflow runs.
+
+Requirement: switch back to pt/eta/phi while preserving the newer higher-order plotting additions.
+
+### Root Cause
+
+1. `ttzNpyProcessor` and `data_config.yaml` had been updated to Cartesian feature names.
+2. `smeft_reweighting.py` base-feature loading/labels also assumed Cartesian inputs.
+3. Existing `.npy` caches could be silently reused across coordinate-system changes.
+
+### Changes Implemented
+
+#### A) Dataset processing reverted to pt/eta/phi
+
+File updated: `ml/custom/ttz/process_ttz_dataset.py`
+
+1. Restored TTZ processed features to:
+- `Z_Lepton{1,2}_{Pt,Eta,Phi}`
+- `W_Lepton_{Pt,Eta,Phi}`
+- `BJet_{Pt,Eta,Phi,Mass}`
+- `MET`, `MET_Phi`
+
+2. Updated ROOT branch extraction accordingly (with `MET_phi` mapped to `MET_Phi` output semantics).
+
+3. Added coordinate-tagged cache naming to prevent stale cross-representation reuse:
+- weighted dataset now resolves to `ttz_ptetaphi_weights.npy` (instead of a generic shared filename).
+
+4. `variables.json` was regenerated/updated to the pt/eta/phi schema (15 features + 4 weight columns).
+
+#### B) Training config switched back to historical feature names
+
+File updated: `ml/custom/ttz/config/data_config.yaml`
+
+1. `feature_selection.keep_names` restored to pt/eta/phi list.
+2. Comments/metadata updated to reflect pt/eta/phi representation.
+
+#### C) Reweighting base representation reverted, higher-order plots preserved
+
+File updated: `ml/custom/ttz/smeft_reweighting.py`
+
+1. `FEATURE_NAMES` restored to pt/eta/phi convention.
+2. ROOT feature loading for comparison/ground-truth switched back to pt/eta/phi columns.
+3. `compute_derived_features(...)` made representation-aware:
+- if base features are pt/eta/phi, convert internally to Cartesian and compute derived quantities;
+- if Cartesian, use existing pathway.
+
+Result: newly added higher-order derived plotting outputs remain available and consistent while the
+training/reweighting base representation is back to the historical pt/eta/phi setup.
+
+#### D) Historical-model loading support for reweighting
+
+File updated: `ml/custom/ttz/smeft_reweighting.py`
+
+1. Added optional CLI run-id overrides per component:
+- `--sm-run-id`
+- `--linear-pos-run-id`
+- `--linear-neg-run-id`
+- `--quadratic-pos-run-id`
+- `--quadratic-neg-run-id`
+
+2. Added direct run-id artifact resolution/loading for MLflow model artifacts, with fallback to
+existing registered-model discovery when run IDs are not supplied.
+
+### Validation
+
+1. Static checks reported no errors in:
+- `ml/custom/ttz/process_ttz_dataset.py`
+- `ml/custom/ttz/config/data_config.yaml`
+- `ml/custom/ttz/smeft_reweighting.py`
+
+2. Processor sanity check confirmed expected cache/file schema:
+- `npy_file = ml/data/ttz/ttz_ptetaphi_weights.npy`
+- first features: `Z_Lepton1_Pt`, `Z_Lepton1_Eta`, `Z_Lepton1_Phi`, ...
+
+3. A Condor batch submission was launched for reweighting with explicit historical run IDs
+(job `4167026.0`).
+
+### Operational Notes
+
+1. Retraining/reprocessing now uses pt/eta/phi-compatible feature columns again.
+2. Existing Cartesian-trained artifacts remain readable by the updated derived-feature code path,
+but should not be mixed with pt/eta/phi models in the same analysis run.
+
+---
+
+## Entry 48: Fixed ROOT-Basis Binning for Reweighting Ratios (2026-03-26)
+
+### Problem
+
+`ROOT(c) / ROOT(SM)` ratio curves in `smeft_reweighting.py` were not perfectly identical across reruns,
+despite using the same ROOT file and the same EFT decomposition.
+
+### Root Cause
+
+Histogram ranges were derived from generated sample percentiles. Because generated samples are stochastic,
+bin edges shifted slightly run-to-run, which induced small visual changes in all ratio curves, including
+the ROOT-only ratio.
+
+### Changes Implemented
+
+File updated: `ml/custom/ttz/smeft_reweighting.py`
+
+1. Added helper `_is_phi_feature(name)` to identify periodic phi variables.
+
+2. Updated `plot_reweighted_distributions(...)` binning policy:
+- if ROOT SM data is provided (`x_root_sm`), ranges are now fixed from ROOT-SM only;
+- phi-like features are forced to the exact periodic domain `[-pi, pi]`.
+
+3. Added runtime log message documenting the fixed-binning policy.
+
+### Validation
+
+1. Static checks: no code errors after patch.
+2. Behavioral expectation: reruns now use stable ROOT-based bin edges, so `ROOT(c)/ROOT(SM)` should be
+substantially more reproducible (remaining tiny differences may still arise from floating-point/histogram
+accumulation order, but bin-edge drift is removed).
+
+---
+
+## Entry 49: Sin/Cos(Phi) Inputs with Explicit ROOT-Branch Guards (2026-03-26)
+
+### Problem
+
+We wanted to improve periodic-angle modeling by switching TTZ base inputs from raw `phi` to
+`(cos(phi), sin(phi))`, while keeping GaussRank preprocessing and preserving compatibility with
+existing ROOT branch names and higher-order physics plots.
+
+### Root Cause
+
+1. Raw `phi` has a discontinuity at `-pi/pi`, which can create local modeling artifacts.
+2. Existing data/training code assumed fixed feature dimensions and hardcoded weight-column indices.
+3. After introducing sin/cos-derived feature names, there was risk of accidental confusion between:
+- real ROOT branches (e.g. `Z_Lepton1_Phi`, `MET_phi`), and
+- derived in-memory feature names (e.g. `Z_Lepton1_Phi_Cos`, `MET_Phi_Sin`).
+
+### Changes Implemented
+
+#### A) Dataset processor now derives sin/cos(phi) from ROOT phi branches
+
+File updated: `ml/custom/ttz/process_ttz_dataset.py`
+
+1. Default coordinate tag switched to `ptetaphi_sincos` and cache naming updated accordingly.
+2. Processed base feature schema changed from 15 to 20 features:
+- leptons/W: `Pt`, `Eta`, `Phi_Cos`, `Phi_Sin`
+- b-jet: `Pt`, `Eta`, `Phi_Cos`, `Phi_Sin`, `Mass`
+- MET: `MET`, `MET_Phi_Cos`, `MET_Phi_Sin`
+3. ROOT loading still requests only physical ROOT branches (`..._Phi`, `MET_phi`) and computes
+    sin/cos in memory.
+4. Added explicit missing-branch check before `tree.arrays(...)` with clear error text that
+    sin/cos features are derived, not ROOT branches.
+5. Weight-column logging updated for new layout (20 features + 4 weights).
+
+#### B) Data config updated for new input dimensionality
+
+File updated: `ml/custom/ttz/config/data_config.yaml`
+
+1. `input_dim` updated to `20`.
+2. `feature_selection.keep_names` updated to sin/cos(phi) feature names.
+3. GaussRank preprocessing kept unchanged (`cont_rescale_type: gauss_rank`).
+
+#### C) DataModule weight extraction generalized
+
+File updated: `ml/custom/ttz/ttz_dataset.py`
+
+1. Replaced hardcoded `WEIGHT_COLS` index assumptions with `WEIGHT_FEATURES` name mapping.
+2. Weight column is now resolved by feature name from processor selection metadata.
+3. All weight columns are dropped dynamically from training features (no fixed `:15` slicing).
+4. Fixed dropped-negative logging percentage denominator for signed base modes.
+
+#### D) Reweighting pipeline aligned to sin/cos inputs (ROOT-safe)
+
+File updated: `ml/custom/ttz/smeft_reweighting.py`
+
+1. `FEATURE_NAMES` updated to the 20-feature sin/cos schema.
+2. ROOT feature loader still reads only true ROOT branches (`..._Phi`, `MET_phi`) and computes
+    cos/sin columns in memory.
+3. `compute_derived_features(...)` extended to support sin/cos base features by reconstructing
+    `phi = atan2(sin_phi, cos_phi)` before Cartesian conversion.
+4. Added explicit missing-branch guards in:
+- `compute_z_normalisations(...)`
+- `load_root_features_and_weights(...)`
+    so invalid branch-name requests fail fast with actionable errors.
+
+### Validation
+
+1. Static checks: no errors reported in edited files.
+2. ROOT naming behavior:
+- loader branch lists contain only physical ROOT names (`*_Phi`, `MET_phi`, `eventWeight`, `smeft_weights`),
+- no `*_Phi_Cos` / `*_Phi_Sin` names are requested from ROOT.
+3. Feature-shape consistency:
+- processor/logging now reflects `20 + 4` column layout when weights are enabled,
+- DataModule extraction no longer depends on fixed absolute indices.
+
+### Operational Notes
+
+1. Retraining with the updated 20D sin/cos input schema is required for model consistency.
+2. This change is intentionally representational: it improves angular periodicity handling while
+    preserving existing ROOT source branches and GaussRank preprocessing.
+
+---
+
+## Entry 50: Sample Analyzer Migration to 20D Sin/Cos Feature Schema (2026-03-26)
+
+### Problem
+
+`ml/custom/ttz/sample_analyzer/run_analysis.py` and its helper modules still contained
+legacy assumptions from the old TTZ layouts:
+
+1. hardcoded `ttz_weights.npy` / 15-feature slicing,
+2. fixed weight-column offsets based on 15+4 layout,
+3. derived-physics utilities expecting Cartesian feature names (`*_Px`, `*_Py`, `*_Pz`, `MET_Px`, `MET_Py`).
+
+After migrating training/data generation to the 20-feature sin/cos(phi) schema, the analyzer
+path was inconsistent and could fail when feature names no longer matched the cartesian-only utilities.
+
+### Changes Implemented
+
+#### A) Entry script now targets current dataset cache
+
+File updated: `ml/custom/ttz/sample_analyzer/run_analysis.py`
+
+1. Default analyzer input changed from legacy `ttz_weights.npy` to current:
+- `ml/data/ttz/ttz_ptetaphi_sincos_weights.npy`
+2. Updated comments to reflect dynamic handling of appended weight columns.
+
+#### B) Analyzer data/weight handling generalized
+
+File updated: `ml/custom/ttz/sample_analyzer/analyzer.py`
+
+1. Comparison data now loads from the provided `data_dir` (no hardcoded old file path).
+2. Number of physics features is derived from `variables.json` (`len(colnames)`), not fixed to 15.
+3. Weight-column indices are computed dynamically as:
+- `n_features + 0` (sm), `+1` (linear), `+2` (quadratic), `+3` (full),
+  including pos/neg mappings.
+4. Added guard: if requested weight column does not exist in the loaded cache,
+    fall back to unweighted comparison with a warning.
+5. Refit fallback path now slices using dynamic feature count (no `:15` assumption).
+6. Selection cleanup now drops all `cHt_weight*` columns generically.
+
+#### C) Derived-physics utilities made representation-aware
+
+File updated: `ml/custom/ttz/sample_analyzer/physics_utils.py`
+
+1. Replaced cartesian-only logic with representation-aware helpers that support:
+- pt/eta/sin-cos(phi),
+- pt/eta/phi,
+- cartesian (Px/Py/Pz).
+2. Added helper conversion routines:
+- `_phi_from_features(...)`, `_get_particle_xyz(...)`, `_get_met_xy(...)`.
+3. `calculate_z_kinematics`, `calculate_w_kinematics`, `calculate_top_kinematics`
+    now reconstruct cartesian components internally when needed.
+
+### Validation
+
+1. Static diagnostics: no errors reported in:
+- `run_analysis.py`
+- `analyzer.py`
+- `physics_utils.py`
+2. Runtime note:
+- local smoke run failed before analyzer execution due to missing dependency in the active shell:
+  `ModuleNotFoundError: No module named 'matplotlib'`.
+- This is an environment issue, not a schema/logic regression in the patched analyzer files.
+
+### Operational Notes
+
+1. The analyzer pipeline is now aligned with current TTZ 20D sin/cos(phi) data conventions.
+2. Old cartesian-based caches/models remain readable where feature names support fallback logic,
+    but current default behavior targets the active sin/cos workflow.
+
+---
+
+## Entry 51: Fixed Analyzer Weight Reset Causing Higher-Level Plot Mismatch (2026-03-27)
+
+### Problem
+
+Higher-level feature plots in `sample_analyzer` showed large discrepancies between generated and MC
+distributions, even when base feature handling had already been migrated to the sin/cos(phi) schema.
+
+### Root Cause
+
+In `ttzSampleAnalyzer._setup_preprocessing()`, the code unconditionally overwrote:
+
+- `self.original_weights = None`
+
+This silently disabled MC event weighting for comparisons, even when valid component weights had been
+successfully extracted earlier in `__init__` based on model `weight_type`.
+
+Result: plots intended as weighted MC vs generated became effectively unweighted MC vs generated,
+which can strongly distort both base and derived/higher-level comparisons.
+
+### Changes Implemented
+
+File updated: `ml/custom/ttz/sample_analyzer/analyzer.py`
+
+1. Removed the unconditional reset of `self.original_weights` inside `_setup_preprocessing()`.
+2. Preserved weight state computed in `__init__`.
+3. Added explicit runtime logging/console diagnostics for comparison mode:
+- weighted MC mode (with `n`, min/max, mean summaries), or
+- unweighted fallback mode.
+
+### Validation
+
+1. Static diagnostics: no errors reported for updated `analyzer.py`.
+2. Behavioral expectation: weighted model comparisons now remain weighted through plotting,
+    preventing accidental weighted/unweighted mismatch in higher-level distributions.
+
+### Operational Notes
+
+1. This fix is independent of representation (pt/eta/phi vs sin/cos(phi)); it addresses
+    a comparison-mode bug in the analyzer pipeline.
+2. If plots still show residual wobble after this fix, investigate statistical effects
+    (dataset size/effective weighted sample size) and scaling/fit quality next.
+
+---
+
+## Entry 52: Reverted TTZ Sin/Cos(Phi) Migration Back to Direct Phi (2026-03-27)
+
+### Request
+
+Rolled back the recent sin/cos(phi) representation changes and restored the previous direct-phi workflow,
+including reverting phi plotting behavior away from fixed `[-pi, pi]` bin limits.
+
+### Changes Implemented
+
+#### A) Dataset processing restored to direct phi
+
+File updated: `ml/custom/ttz/process_ttz_dataset.py`
+
+1. Default coordinate system reverted from `ptetaphi_sincos` to `ptetaphi`.
+2. Feature schema reverted from 20 to 15 physics features:
+- `Z_Lepton1/2`: `Pt`, `Eta`, `Phi`
+- `W_Lepton`: `Pt`, `Eta`, `Phi`
+- `BJet`: `Pt`, `Eta`, `Phi`, `Mass`
+- `MET`: `MET`, `MET_Phi`
+3. ROOT loading now maps directly to phi output columns (no in-memory sin/cos expansion).
+4. Weight-column layout comments/logging restored to 15+4 indexing.
+
+#### B) Training config restored to direct phi feature set
+
+File updated: `ml/custom/ttz/config/data_config.yaml`
+
+1. `input_dim` reverted to `15`.
+2. `feature_selection.keep_names` reverted from `*_Phi_Cos/*_Phi_Sin` to direct `*_Phi` names.
+3. Preprocessing note updated to reflect direct pt/eta/phi usage.
+
+#### C) Analyzer default input cache restored
+
+File updated: `ml/custom/ttz/sample_analyzer/run_analysis.py`
+
+1. Default data path reverted to:
+- `ml/data/ttz/ttz_ptetaphi_weights.npy`
+
+#### D) Reweighting pipeline restored to direct phi schema
+
+File updated: `ml/custom/ttz/smeft_reweighting.py`
+
+1. `FEATURE_NAMES` reverted from 20 sin/cos features to 15 direct-phi features.
+2. ROOT feature extraction reverted to direct phi columns (no sin/cos transform).
+3. Derived-feature reconstruction path simplified back to direct pt/eta/phi branch.
+4. Removed fixed phi plotting range behavior:
+- no forced `[-pi, pi]` binning,
+- ranges now follow the standard percentile-based range policy (ROOT-basis when provided).
+
+#### E) Variables schema restored
+
+File updated: `ml/data/ttz/variables.json`
+
+1. Replaced all `*_Phi_Cos/*_Phi_Sin` entries with direct `*_Phi` entries.
+2. Schema now matches the 15-feature direct-phi layout.
+
+#### F) Analyzer physics utilities simplified
+
+File updated: `ml/custom/ttz/sample_analyzer/physics_utils.py`
+
+1. Removed sin/cos-specific phi extraction branches.
+2. Utilities now use direct phi names (plus existing cartesian fallback).
+
+### Validation
+
+1. Static diagnostics: no errors reported in all edited files.
+2. Search checks: no remaining TTZ sin/cos schema strings (`Phi_Cos`, `Phi_Sin`, `ptetaphi_sincos`) in active TTZ pipeline files.
+3. Dataset cache presence confirmed:
+- `ttz_ptetaphi_weights.npy` exists,
+- `ttz_ptetaphi_sincos_weights.npy` also still exists but is no longer the default path.
+
+### Operational Notes
+
+1. Existing models trained on sin/cos inputs are not representation-compatible with direct-phi inputs.
+2. For best consistency after this rollback, retrain models using the restored 15D direct-phi config.
+
+---
+
+## Entry 53: Added Automatic Correlation Diagnostics to Analyzer and SMEFT Sweep (2026-03-27)
+
+### Problem
+
+Higher-order mismatches (notably `Z_Mass`, `W_MT`, `Top_MT`) can persist even when most 1D feature overlays look good.
+To debug these cases efficiently, we needed dedicated correlation diagnostics (especially in angular differences)
+to run automatically in the same pipeline used for model comparison and SMEFT sweeps.
+
+### Changes Implemented
+
+#### A) New correlation diagnostic plotting utility
+
+File updated: `ml/custom/ttz/sample_analyzer/plotting.py`
+
+1. Added `plot_correlation_diagnostics(...)` that generates:
+- 1D overlays for:
+    - `DeltaEta_ll`
+    - `DeltaPhi_ll`
+    - `DeltaPhi_l_MET`
+- 2D maps for `DeltaEta_ll` vs `DeltaPhi_ll`:
+    - real density,
+    - generated density,
+    - generated/real ratio.
+2. Added helpers for wrapped `DeltaPhi` and weighted histogram handling.
+
+#### B) Analyzer integration
+
+File updated: `ml/custom/ttz/sample_analyzer/analyzer.py`
+
+1. Added analyzer method `plot_correlation_diagnostics(...)`.
+2. Updated `plot_all(...)` signature to include:
+- `include_correlation_diagnostics=True` (default).
+3. `plot_all(...)` now calls correlation diagnostics automatically after feature comparison plots.
+
+#### C) Automatic usage by SMEFT sweep path
+
+No direct file change required in `run_smeft_analysis.py`.
+
+Because `ml/custom/ttz/run_smeft_analysis.py` invokes `sample_analyzer/run_analysis.py`, and
+`run_analysis.py` calls `analyzer.plot_all(...)`, diagnostics are now automatically produced
+for each weight-type run in the SMEFT sweep.
+
+### Outputs
+
+For each analysis output directory, additional files are now produced:
+- `correlation_diagnostics_1d.png`
+- `correlation_diagnostics_2d.png`
+
+### Validation
+
+1. Static diagnostics: no errors reported in modified files.
+2. Call-path verification: `run_analysis.py` still calls `analyzer.plot_all(...)`, so diagnostics
+     are included automatically in both direct analyzer runs and `run_smeft_analysis.py` sweeps.
+
+---
+
+## Entry 54: Reconciled Condor GPU-Idle Mitigations Across Submit Paths (2026-03-29)
+
+### Problem
+
+New training job `mafmademog_sm_2441320_2441320` was held with:
+- `GPU claimed but no GPU usage` (Code 26)
+
+while previous mitigation work had already been documented (Entry 46).
+
+### Root Cause
+
+1. Historical mitigation from Entry 46 (`experiment_config.check_metrics_n_epoch=1000000`) was still present in
+    `train_all_weights.py` but not consistently present in `run/run_bash.sh` after later edits.
+2. Condor jobs were also vulnerable to GPU feed starvation when requesting too little CPU and using
+    `num_workers=0` for data loading.
+
+### Changes Implemented
+
+#### A) `run_bash.sh` submission path aligned with prior mitigation
+
+File updated: `ml/custom/ttz/run/run_bash.sh`
+
+1. Restored Hydra override:
+- `experiment_config.check_metrics_n_epoch=1000000`
+2. Kept improved GPU-feeding overrides:
+- `data_config.dataloader_config.num_workers=4`
+- `data_config.dataloader_config.pin_memory=True`
+3. Kept increased CPU request in condorsub invocation:
+- `-n 8` (from `-n 1`)
+
+#### B) `train_all_weights.py` path kept consistent
+
+File verified/updated: `ml/custom/ttz/train_all_weights.py`
+
+1. Continues to submit with:
+- `experiment_config.check_metrics_n_epoch=1000000`
+- `data_config.dataloader_config.num_workers=4`
+- `data_config.dataloader_config.pin_memory=True`
+2. CPU request remains increased:
+- `CONDOR_N_NODES = 8`
+
+### Validation
+
+1. Static diagnostics: no errors reported in
+- `ml/custom/ttz/run/run_bash.sh`
+- `ml/custom/ttz/train_all_weights.py`
+2. Environment sanity check confirms CUDA availability in the project venv:
+- `torch 2.1.2+cu121`, `cuda_available=True`, `cuda_device_count=1`.
+
+### Operational Notes
+
+1. Both Condor submission entry points now share the same anti-idle strategy:
+- reduce CPU-heavy periodic metric phases,
+- provide enough CPU/data-loader throughput to keep GPU utilization active.
+2. This reconciles and preserves the original Code-26 mitigation intent from Entry 46.
+
+

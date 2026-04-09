@@ -51,16 +51,24 @@ OUTPUT_DIR = PROJECT_ROOT / "ml" / "custom" / "ttz" / "figures"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 FEATURE_BRANCHES = [
-    'Z_Lepton1_Pt', 'Z_Lepton1_Eta', 'Z_Lepton1_Phi',
-    'Z_Lepton2_Pt', 'Z_Lepton2_Eta', 'Z_Lepton2_Phi',
-    'W_Lepton_Pt',  'W_Lepton_Eta',  'W_Lepton_Phi',
-    'BJet_Pt',      'BJet_Eta',      'BJet_Phi',     'BJet_Mass',
+    'Z_Lepton1_Px', 'Z_Lepton1_Py', 'Z_Lepton1_Pz',
+    'Z_Lepton2_Px', 'Z_Lepton2_Py', 'Z_Lepton2_Pz',
+    'W_Lepton_Px',  'W_Lepton_Py',  'W_Lepton_Pz',
+    'BJet_Px',      'BJet_Py',      'BJet_Pz',      'BJet_Mass',
+    'MET_Px',       'MET_Py',
+]
+
+ROOT_BASE_BRANCHES = [
+    'Z_Lepton1_Px', 'Z_Lepton1_Py', 'Z_Lepton1_Pz',
+    'Z_Lepton2_Px', 'Z_Lepton2_Py', 'Z_Lepton2_Pz',
+    'W_Lepton_Px',  'W_Lepton_Py',  'W_Lepton_Pz',
+    'BJet_Px',      'BJet_Py',      'BJet_Pz',      'BJet_Mass',
     'MET',          'MET_phi',
 ]
 
 UNITS = {
     'Pt': '[GeV]', 'pt': '[GeV]', 'MET': '[GeV]', 'Mass': '[GeV]', 'mass': '[GeV]',
-    'Phi': '[rad]', 'phi': '[rad]',
+    'Px': '[GeV]', 'Py': '[GeV]', 'Pz': '[GeV]',
 }
 
 
@@ -70,17 +78,15 @@ def compute_derived_features(x: np.ndarray):
     Mirrors compute_derived_features() in smeft_reweighting.py.
     Returns (x_extended, all_feature_names).
     """
-    zl1_pt, zl1_eta, zl1_phi = x[:, 0],  x[:, 1],  x[:, 2]
-    zl2_pt, zl2_eta, zl2_phi = x[:, 3],  x[:, 4],  x[:, 5]
-    wl_pt,              wl_phi = x[:, 6],               x[:, 8]
-    bj_pt,              bj_phi = x[:, 9],               x[:, 11]
-    met,    met_phi            = x[:, 13], x[:, 14]
+    zl1_px, zl1_py, zl1_pz = x[:, 0], x[:, 1], x[:, 2]
+    zl2_px, zl2_py, zl2_pz = x[:, 3], x[:, 4], x[:, 5]
+    wl_px, wl_py, wl_pz = x[:, 6], x[:, 7], x[:, 8]
+    bj_px, bj_py, bj_pz = x[:, 9], x[:, 10], x[:, 11]
+    met_px, met_py = x[:, 13], x[:, 14]
 
     # Z boson (massless leptons)
-    zl1_px = zl1_pt * np.cos(zl1_phi);  zl1_py = zl1_pt * np.sin(zl1_phi)
-    zl1_pz = zl1_pt * np.sinh(zl1_eta); zl1_E  = zl1_pt * np.cosh(zl1_eta)
-    zl2_px = zl2_pt * np.cos(zl2_phi);  zl2_py = zl2_pt * np.sin(zl2_phi)
-    zl2_pz = zl2_pt * np.sinh(zl2_eta); zl2_E  = zl2_pt * np.cosh(zl2_eta)
+    zl1_E = np.sqrt(np.clip(zl1_px**2 + zl1_py**2 + zl1_pz**2, 0.0, None))
+    zl2_E = np.sqrt(np.clip(zl2_px**2 + zl2_py**2 + zl2_pz**2, 0.0, None))
 
     Z_px = zl1_px + zl2_px;  Z_py = zl1_py + zl2_py
     Z_pz = zl1_pz + zl2_pz;  Z_E  = zl1_E  + zl2_E
@@ -90,17 +96,19 @@ def compute_derived_features(x: np.ndarray):
     Z_eta  = np.arctanh(np.clip(Z_pz / np.clip(Z_p, 1e-9, None), -1 + 1e-7, 1 - 1e-7))
     Z_mass = np.sqrt(np.clip(Z_E**2 - Z_p**2, 0.0, None))
 
+    zl1_eta = np.arctanh(np.clip(zl1_pz / np.clip(np.sqrt(zl1_px**2 + zl1_py**2 + zl1_pz**2), 1e-9, None), -1 + 1e-7, 1 - 1e-7))
+    zl2_eta = np.arctanh(np.clip(zl2_pz / np.clip(np.sqrt(zl2_px**2 + zl2_py**2 + zl2_pz**2), 1e-9, None), -1 + 1e-7, 1 - 1e-7))
+    zl1_phi = np.arctan2(zl1_py, zl1_px)
+    zl2_phi = np.arctan2(zl2_py, zl2_px)
     dphi_ll = (zl1_phi - zl2_phi + np.pi) % (2 * np.pi) - np.pi
     Z_deltaR = np.sqrt((zl1_eta - zl2_eta)**2 + dphi_ll**2)
 
     # W boson transverse (lepton + MET 2D vector sum)
-    W_px = wl_pt * np.cos(wl_phi) + met * np.cos(met_phi)
-    W_py = wl_pt * np.sin(wl_phi) + met * np.sin(met_phi)
+    W_px = wl_px + met_px
+    W_py = wl_py + met_py
     W_boson_pt = np.sqrt(W_px**2 + W_py**2)
 
     # Top quark transverse (b-jet + W transverse)
-    bj_px = bj_pt * np.cos(bj_phi)
-    bj_py = bj_pt * np.sin(bj_phi)
     top_pt = np.sqrt((bj_px + W_px)**2 + (bj_py + W_py)**2)
 
     # Z / top pT ratio
@@ -155,7 +163,7 @@ def main():
     # Load data from ROOT file
     # ------------------------------------------------------------------
     log.info("\nLoading data from ROOT file...")
-    branches = FEATURE_BRANCHES + ['eventWeight']
+    branches = ROOT_BASE_BRANCHES + ['eventWeight']
     with uproot.open(DATA_ROOT_FILE) as f:
         tree = f["Events"]
         data_np = tree.arrays(branches, library='np')
@@ -172,8 +180,16 @@ def main():
         data_np[key] = data_np[key][valid_mask]
     smeft_filtered = smeft_ak[valid_mask]
 
-    # Feature matrix: (N, 15)
-    x = np.column_stack([data_np[b] for b in FEATURE_BRANCHES]).astype(np.float64)
+    # Feature matrix: (N, 15), converting (MET, MET_phi) -> (MET_Px, MET_Py)
+    met_px = data_np['MET'] * np.cos(data_np['MET_phi'])
+    met_py = data_np['MET'] * np.sin(data_np['MET_phi'])
+    x = np.column_stack([
+        data_np['Z_Lepton1_Px'], data_np['Z_Lepton1_Py'], data_np['Z_Lepton1_Pz'],
+        data_np['Z_Lepton2_Px'], data_np['Z_Lepton2_Py'], data_np['Z_Lepton2_Pz'],
+        data_np['W_Lepton_Px'], data_np['W_Lepton_Py'], data_np['W_Lepton_Pz'],
+        data_np['BJet_Px'], data_np['BJet_Py'], data_np['BJet_Pz'], data_np['BJet_Mass'],
+        met_px, met_py,
+    ]).astype(np.float64)
     N = len(x)
     log.info(f"  Events after filter: {N:,}")
 

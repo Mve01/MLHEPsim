@@ -61,13 +61,13 @@ def load_ttz_data(root_file_path):
     """
     log.info(f"Loading data from {root_file_path}")
 
-    # Base input features (cylindrical coordinates, same as training)
+    # Base input features (Cartesian coordinates, same as training)
     base_branches = [
-        'Z_Lepton1_Pt', 'Z_Lepton1_Eta', 'Z_Lepton1_Phi',
-        'Z_Lepton2_Pt', 'Z_Lepton2_Eta', 'Z_Lepton2_Phi',
-        'W_Lepton_Pt',  'W_Lepton_Eta',  'W_Lepton_Phi',
-        'BJet_Pt',      'BJet_Eta',       'BJet_Phi',     'BJet_Mass',
-        'MET',          'MET_phi',
+        'Z_Lepton1_Px', 'Z_Lepton1_Py', 'Z_Lepton1_Pz',
+        'Z_Lepton2_Px', 'Z_Lepton2_Py', 'Z_Lepton2_Pz',
+        'W_Lepton_Px',  'W_Lepton_Py',  'W_Lepton_Pz',
+        'BJet_Px',      'BJet_Py',      'BJet_Pz',      'BJet_Mass',
+        'MET_Px',       'MET_Py',
     ]
 
     # Higher-order / derived features stored in the ROOT tree
@@ -80,17 +80,25 @@ def load_ttz_data(root_file_path):
 
     feature_branches = base_branches + derived_branches
 
+    root_base_branches = [
+        'Z_Lepton1_Px', 'Z_Lepton1_Py', 'Z_Lepton1_Pz',
+        'Z_Lepton2_Px', 'Z_Lepton2_Py', 'Z_Lepton2_Pz',
+        'W_Lepton_Px',  'W_Lepton_Py',  'W_Lepton_Pz',
+        'BJet_Px',      'BJet_Py',      'BJet_Pz',      'BJet_Mass',
+        'MET',          'MET_phi',
+    ]
+
     # Weight and selection branches
     weight_branches = ['eventWeight', 'smeft_weights']
     selection_branches = ['Jet_Pt']
 
-    all_branches = feature_branches + weight_branches + selection_branches
+    all_branches = root_base_branches + derived_branches + weight_branches + selection_branches
 
     with uproot.open(root_file_path) as root_file:
         tree = root_file["Events"]
         data = tree.arrays(all_branches, library="np")
 
-    n_events = len(data['MET'])
+    n_events = len(data['eventWeight'])
     log.info(f"Loaded {n_events} events")
 
     # ---- Filter: keep only events with exactly 3 jets ----
@@ -102,8 +110,20 @@ def load_ttz_data(root_file_path):
     log.info(f"Base features   : {len(base_branches)}")
     log.info(f"Derived features: {len(derived_branches)}")
 
-    # Stack all features into one array, applying the jet filter
-    feature_columns = [data[branch][mask] for branch in feature_branches]
+    # Stack all features into one array, applying the jet filter.
+    # MET_Px/MET_Py are derived from ROOT branches (MET, MET_phi).
+    met_px = data['MET'][mask] * np.cos(data['MET_phi'][mask])
+    met_py = data['MET'][mask] * np.sin(data['MET_phi'][mask])
+
+    feature_columns = [
+        data['Z_Lepton1_Px'][mask], data['Z_Lepton1_Py'][mask], data['Z_Lepton1_Pz'][mask],
+        data['Z_Lepton2_Px'][mask], data['Z_Lepton2_Py'][mask], data['Z_Lepton2_Pz'][mask],
+        data['W_Lepton_Px'][mask], data['W_Lepton_Py'][mask], data['W_Lepton_Pz'][mask],
+        data['BJet_Px'][mask], data['BJet_Py'][mask], data['BJet_Pz'][mask], data['BJet_Mass'][mask],
+        met_px, met_py,
+    ]
+    # Append derived branches after the 15 base features in their original order.
+    feature_columns.extend([data[branch][mask] for branch in derived_branches])
     features = np.column_stack(feature_columns).astype(np.float32)
 
     # Extract weights (with jet filter applied)

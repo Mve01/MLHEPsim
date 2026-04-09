@@ -33,20 +33,18 @@ IDX_MINUS  = 122  # cHt = -5.0
 C_NORM     = 5.0  # normalisation constant matching the index choice
 
 FEATURE_NAMES = [
-    'Z_Lepton1_Pt', 'Z_Lepton1_Eta', 'Z_Lepton1_Phi',
-    'Z_Lepton2_Pt', 'Z_Lepton2_Eta', 'Z_Lepton2_Phi',
-    'W_Lepton_Pt',  'W_Lepton_Eta',  'W_Lepton_Phi',
-    'BJet_Pt',      'BJet_Eta',      'BJet_Phi',     'BJet_Mass',
-    'MET',          'MET_phi',
+    'Z_Lepton1_Px', 'Z_Lepton1_Py', 'Z_Lepton1_Pz',
+    'Z_Lepton2_Px', 'Z_Lepton2_Py', 'Z_Lepton2_Pz',
+    'W_Lepton_Px',  'W_Lepton_Py',  'W_Lepton_Pz',
+    'BJet_Px',      'BJet_Py',      'BJet_Pz',      'BJet_Mass',
+    'MET_Px',       'MET_Py',
 ]
 
 UNITS = {}
 for name in FEATURE_NAMES:
     lower = name.lower()
-    if any(k in lower for k in ('_pt', 'met', '_mass')):
+    if any(k in lower for k in ('_pt', '_px', '_py', '_pz', 'met', '_mass')):
         UNITS[name] = '[GeV]'
-    elif '_phi' in lower or 'phi' in lower:
-        UNITS[name] = '[rad]'
     else:
         UNITS[name] = ''
 

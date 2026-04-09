@@ -97,9 +97,9 @@ def main():
     print("="*60)
 
     # Configuration
-    # ttz_weights.npy holds 15 physics features + 4 SMEFT weight columns (19 cols total).
-    # The analyzer slices the first 15 columns, so we pass the same file for both roles.
-    data_dir = "ml/data/ttz/ttz_weights.npy"
+    # Use the direct-phi TTZ cache by default.
+    # If weight columns are present, the analyzer handles them dynamically.
+    data_dir = "ml/data/ttz/ttz_ptetaphi_weights.npy"
     variables_json = "ml/data/ttz/variables.json"
     model_name = args.model_name or get_latest_ttz_model()
     figures_dir = args.figures_dir  # None → analyzer uses its own default

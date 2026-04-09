@@ -5,14 +5,19 @@ from torch.utils.data import DataLoader, Sampler
 
 from ml.common.data_utils.data_modules import DataModule, SupervisedDataset
 
-# Column indices of each weight type in the multi-weight .npy file (15 features + 4 weights).
-# The _pos and _neg variants share the same column as their base type but apply sign-based
-# event filtering in setup(): _pos keeps w>=0, _neg keeps w<0 and flips sign so the flow
-# always sees positive training weights.
-WEIGHT_COLS = {
-    "sm": 15, "linear": 16, "quadratic": 17, "full": 18,
-    "linear_pos": 16, "linear_neg": 16,
-    "quadratic_pos": 17, "quadratic_neg": 17,
+# Weight feature names in the processed selection table.
+# The _pos and _neg variants share the same base feature and apply sign-based
+# event filtering in setup(): _pos keeps w>=0, _neg keeps w<0 and flips sign so
+# the flow always sees positive training weights.
+WEIGHT_FEATURES = {
+    "sm": "cHt_weight_sm",
+    "linear": "cHt_weight_linear",
+    "quadratic": "cHt_weight_quadratic",
+    "full": "cHt_weight_full",
+    "linear_pos": "cHt_weight_linear",
+    "linear_neg": "cHt_weight_linear",
+    "quadratic_pos": "cHt_weight_quadratic",
+    "quadratic_neg": "cHt_weight_quadratic",
 }
 
 
@@ -100,80 +105,92 @@ class ttzDataModule(DataModule):
         data, self.selection, self.scalers = self.processor()
         data = np.float32(data)
         
-        # Extract weights from the multi-weight file if requested
+        # Extract weights from the multi-weight file if requested.
         if self.use_weights:
-            if data.shape[1] == 19:  # 15 features + 4 weight columns (sm, linear, quadratic, full)
-                if self.weight_type not in WEIGHT_COLS:
-                    raise ValueError(f"weight_type='{self.weight_type}' not in {list(WEIGHT_COLS)}")
-                col = WEIGHT_COLS[self.weight_type]
-                self.weights = data[:, col]          # select the correct weight column
-                data = data[:, :15]                  # keep only the 15 physics features
-                # Remove all 4 weight column entries from the feature selection DataFrame
-                self.selection = self.selection[
-                    ~self.selection["feature"].str.startswith("cHt_weight")
-                ].reset_index(drop=True)
+            if self.weight_type not in WEIGHT_FEATURES:
+                raise ValueError(f"weight_type='{self.weight_type}' not in {list(WEIGHT_FEATURES)}")
 
-                # For _pos/_neg split types, filter by sign BEFORE normalisation so that
-                # mean(|w|) is computed only over the kept events.
-                n_total_before = len(data)
-                if self.weight_type.endswith('_pos'):
-                    valid_mask = self.weights >= 0
-                    n_kept = int(valid_mask.sum())
-                    n_dropped = n_total_before - n_kept
-                    data = data[valid_mask]
-                    self.weights = self.weights[valid_mask]
-                    logging.info(
-                        f"  '{self.weight_type}': kept {n_kept} positive-weight events, "
-                        f"dropped {n_dropped} ({100*n_dropped/n_total_before:.2f}%) negative-weight events."
-                    )
-                elif self.weight_type.endswith('_neg'):
-                    valid_mask = self.weights < 0
-                    n_kept = int(valid_mask.sum())
-                    n_dropped = n_total_before - n_kept
-                    data = data[valid_mask]
-                    self.weights = -self.weights[valid_mask]  # flip sign → always positive for training
-                    logging.info(
-                        f"  '{self.weight_type}': kept {n_kept} negative-weight events (sign flipped to positive), "
-                        f"dropped {n_dropped} ({100*n_dropped/n_total_before:.2f}%) non-negative events."
-                    )
-
-                # Global normalisation to unit mean — no per-batch scaling.
-                # With stratified sampling, batch composition is controlled and
-                # the flow sees true weight magnitudes.
-                weight_mean = float(np.mean(self.weights))
-                self.weights = self.weights / weight_mean
-                logging.info(
-                    f"Extracted weight_type='{self.weight_type}' weights (col {col}) "
-                    f"from data. Features shape: {data.shape}, Weights shape: {self.weights.shape}"
-                )
-                n_neg = int((self.weights < 0).sum())
-                p99 = float(np.percentile(self.weights, 99))
-                p999 = float(np.percentile(self.weights, 99.9))
-                logging.info(
-                    f"  '{self.weight_type}' weights normalised by mean(w)={weight_mean:.6e}: "
-                    f"mean={np.mean(self.weights):.6f}, min={np.min(self.weights):.6f}, "
-                    f"p99={p99:.4f}, p99.9={p999:.4f}, max={np.max(self.weights):.6f}, "
-                    f"n_neg={n_neg} ({100*n_neg/len(self.weights):.2f}%)"
+            feature_names = self.selection["feature"].astype(str).tolist()
+            requested_weight_feature = WEIGHT_FEATURES[self.weight_type]
+            if requested_weight_feature not in feature_names:
+                raise ValueError(
+                    f"Requested weight feature '{requested_weight_feature}' for weight_type '{self.weight_type}' "
+                    "not found in processor selection."
                 )
 
-                # For base signed types (linear, quadratic), drop remaining negatives for
-                # backward compatibility.  The proper solution for signed weights is to use
-                # the _pos / _neg split types above.
-                if n_neg > 0 and not self.weight_type.endswith(('_pos', '_neg')):
-                    valid_mask = self.weights >= 0
-                    n_dropped = int((~valid_mask).sum())
-                    data = data[valid_mask]
-                    self.weights = self.weights[valid_mask]
-                    logging.warning(
-                        f"  Dropped {n_dropped} ({100*n_dropped/len(self.weights)+n_dropped:.2f}%) events with "
-                        f"negative '{self.weight_type}' weights. Remaining: {len(data)} events. "
-                        f"Consider using '{self.weight_type}_pos' / '{self.weight_type}_neg' instead."
-                    )
-                    if len(self.weights) > 0:
-                        self.weights = self.weights / np.mean(self.weights)
-            else:
-                logging.warning(f"use_weights=True but data shape is {data.shape}, expected 19 columns (15 features + 4 weights). Training without weights.")
-                self.use_weights = False
+            weight_feature_set = {
+                "cHt_weight_sm",
+                "cHt_weight_linear",
+                "cHt_weight_quadratic",
+                "cHt_weight_full",
+            }
+            col = feature_names.index(requested_weight_feature)
+            self.weights = data[:, col]
+
+            # Keep only physics features (drop all appended weight columns).
+            feature_cols = [i for i, name in enumerate(feature_names) if name not in weight_feature_set]
+            data = data[:, feature_cols]
+            self.selection = self.selection.iloc[feature_cols].reset_index(drop=True)
+
+            # For _pos/_neg split types, filter by sign BEFORE normalisation so that
+            # mean(|w|) is computed only over the kept events.
+            n_total_before = len(data)
+            if self.weight_type.endswith('_pos'):
+                valid_mask = self.weights >= 0
+                n_kept = int(valid_mask.sum())
+                n_dropped = n_total_before - n_kept
+                data = data[valid_mask]
+                self.weights = self.weights[valid_mask]
+                logging.info(
+                    f"  '{self.weight_type}': kept {n_kept} positive-weight events, "
+                    f"dropped {n_dropped} ({100*n_dropped/n_total_before:.2f}%) negative-weight events."
+                )
+            elif self.weight_type.endswith('_neg'):
+                valid_mask = self.weights < 0
+                n_kept = int(valid_mask.sum())
+                n_dropped = n_total_before - n_kept
+                data = data[valid_mask]
+                self.weights = -self.weights[valid_mask]  # flip sign -> always positive for training
+                logging.info(
+                    f"  '{self.weight_type}': kept {n_kept} negative-weight events (sign flipped to positive), "
+                    f"dropped {n_dropped} ({100*n_dropped/n_total_before:.2f}%) non-negative events."
+                )
+
+            # Global normalisation to unit mean — no per-batch scaling.
+            # With stratified sampling, batch composition is controlled and
+            # the flow sees true weight magnitudes.
+            weight_mean = float(np.mean(self.weights))
+            self.weights = self.weights / weight_mean
+            logging.info(
+                f"Extracted weight_type='{self.weight_type}' weights (col {col}) "
+                f"from data. Features shape: {data.shape}, Weights shape: {self.weights.shape}"
+            )
+            n_neg = int((self.weights < 0).sum())
+            p99 = float(np.percentile(self.weights, 99))
+            p999 = float(np.percentile(self.weights, 99.9))
+            logging.info(
+                f"  '{self.weight_type}' weights normalised by mean(w)={weight_mean:.6e}: "
+                f"mean={np.mean(self.weights):.6f}, min={np.min(self.weights):.6f}, "
+                f"p99={p99:.4f}, p99.9={p999:.4f}, max={np.max(self.weights):.6f}, "
+                f"n_neg={n_neg} ({100*n_neg/len(self.weights):.2f}%)"
+            )
+
+            # For base signed types (linear, quadratic), drop remaining negatives for
+            # backward compatibility.  The proper solution for signed weights is to use
+            # the _pos / _neg split types above.
+            if n_neg > 0 and not self.weight_type.endswith(('_pos', '_neg')):
+                valid_mask = self.weights >= 0
+                n_dropped = int((~valid_mask).sum())
+                n_before_drop = len(self.weights)
+                data = data[valid_mask]
+                self.weights = self.weights[valid_mask]
+                logging.warning(
+                    f"  Dropped {n_dropped} ({100*n_dropped/n_before_drop:.2f}%) events with "
+                    f"negative '{self.weight_type}' weights. Remaining: {len(data)} events. "
+                    f"Consider using '{self.weight_type}_pos' / '{self.weight_type}_neg' instead."
+                )
+                if len(self.weights) > 0:
+                    self.weights = self.weights / np.mean(self.weights)
 
         self._get_splits(len(data))
 

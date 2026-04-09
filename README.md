@@ -11,9 +11,11 @@ Using Machine Learning to Simulate Distributions of Observables at the Large Had
 
 Arxiv link: https://arxiv.org/abs/2310.08994
 
-## Setup
+## Overview
 
-More detailed instructions can be found [here](ml/custom/HIGGS/analysis/README.md).
+This project trains normalizing flow models on ttZ physics data (trilepton channel) with 15 input features. The trained models are evaluated on their ability to generate realistic particle physics events.
+
+## Setup
 
 ### Virtual environment configuration
 
@@ -75,7 +77,7 @@ Out[7]: 'NVIDIA GeForce RTX 4090'
 
 ### Code logging
 
-A basic logging configuration is set up [here](ml/common/utils/loggers.py). The logger is configured to write to a file in the `logs/` directory. The log file is name is a timestamp. The log level is set to `INFO` by default. Use it like this:
+A basic logging configuration is set up [here](ml/common/utils/loggers.py). The logger is configured to write to a file in the `logs/` directory. The log file name is a timestamp. The log level is set to `INFO` by default. Use it like this:
   
 ```python
 from ml.common.loggers import setup_logger

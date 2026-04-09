@@ -1,0 +1,17 @@
+model_name: MAFMADEMOG
+activation: GELU
+num_flows: 5
+num_hidden_layers: 4
+hidden_layer_dim: 384
+batchnorm_flow: True 
+maf_residuals: True
+conv1x1: True
+res_layers_in_block: 2
+normalization_out: False
+
+# MOG params
+num_hidden_layers_mog_net: 4
+hidden_layer_mog_dim: 384
+n_mixtures: 4
+mog_residuals: True
+res_layers_in_mog_block: 2
